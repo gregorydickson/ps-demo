@@ -6,8 +6,8 @@ in a graph database structure.
 """
 
 from typing import List, Optional
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CompanyNode(BaseModel):
@@ -17,14 +17,13 @@ class CompanyNode(BaseModel):
     role: str = Field(..., description="Role in contract (e.g., 'vendor', 'client')")
     company_id: Optional[str] = Field(None, description="Unique company identifier")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "Acme Corp",
-                "role": "vendor",
-                "company_id": "acme_corp_123"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "name": "Acme Corp",
+            "role": "vendor",
+            "company_id": "acme_corp_123"
         }
+    })
 
 
 class ClauseNode(BaseModel):
@@ -35,15 +34,14 @@ class ClauseNode(BaseModel):
     clause_type: Optional[str] = Field(None, description="Type of clause (e.g., 'payment', 'termination')")
     importance: Optional[str] = Field("medium", description="Importance level: low, medium, high")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "section_name": "Payment Terms",
-                "content": "Payment shall be made within 30 days...",
-                "clause_type": "payment",
-                "importance": "high"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "section_name": "Payment Terms",
+            "content": "Payment shall be made within 30 days...",
+            "clause_type": "payment",
+            "importance": "high"
         }
+    })
 
 
 class RiskFactorNode(BaseModel):
@@ -54,15 +52,14 @@ class RiskFactorNode(BaseModel):
     section: Optional[str] = Field(None, description="Related section name")
     recommendation: Optional[str] = Field(None, description="Recommended action")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "concern": "Unlimited liability exposure",
-                "risk_level": "high",
-                "section": "Liability Clause",
-                "recommendation": "Negotiate a liability cap"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "concern": "Unlimited liability exposure",
+            "risk_level": "high",
+            "section": "Liability Clause",
+            "recommendation": "Negotiate a liability cap"
         }
+    })
 
 
 class ContractNode(BaseModel):
@@ -70,7 +67,7 @@ class ContractNode(BaseModel):
 
     contract_id: str = Field(..., description="Unique contract identifier")
     filename: str = Field(..., description="Original filename")
-    upload_date: datetime = Field(default_factory=datetime.now, description="Upload timestamp")
+    upload_date: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Upload timestamp")
     risk_score: Optional[float] = Field(None, ge=0, le=10, description="Overall risk score (0-10)")
     risk_level: Optional[str] = Field(None, description="Overall risk level: low, medium, high")
     payment_amount: Optional[str] = Field(None, description="Payment amount from contract")
@@ -78,20 +75,19 @@ class ContractNode(BaseModel):
     has_termination_clause: Optional[bool] = Field(None, description="Whether contract has termination clause")
     liability_cap: Optional[str] = Field(None, description="Liability cap amount or 'unlimited'")
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "contract_id": "contract_123",
-                "filename": "service_agreement.pdf",
-                "upload_date": "2024-01-15T10:30:00",
-                "risk_score": 6.5,
-                "risk_level": "medium",
-                "payment_amount": "$50,000",
-                "payment_frequency": "monthly",
-                "has_termination_clause": True,
-                "liability_cap": "$100,000"
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "contract_id": "contract_123",
+            "filename": "service_agreement.pdf",
+            "upload_date": "2024-01-15T10:30:00",
+            "risk_score": 6.5,
+            "risk_level": "medium",
+            "payment_amount": "$50,000",
+            "payment_frequency": "monthly",
+            "has_termination_clause": True,
+            "liability_cap": "$100,000"
         }
+    })
 
 
 class ContractRelationship(BaseModel):
@@ -112,33 +108,32 @@ class ContractGraph(BaseModel):
     risk_factors: List[RiskFactorNode] = Field(default_factory=list)
     relationships: List[ContractRelationship] = Field(default_factory=list)
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "contract": {
-                    "contract_id": "contract_123",
-                    "filename": "agreement.pdf",
-                    "risk_score": 5.0,
-                    "risk_level": "medium"
-                },
-                "companies": [
-                    {"name": "Acme Corp", "role": "vendor"},
-                    {"name": "Client Inc", "role": "client"}
-                ],
-                "clauses": [
-                    {
-                        "section_name": "Payment Terms",
-                        "content": "Payment within 30 days",
-                        "clause_type": "payment"
-                    }
-                ],
-                "risk_factors": [
-                    {
-                        "concern": "Late payment penalties unclear",
-                        "risk_level": "medium",
-                        "section": "Payment Terms"
-                    }
-                ],
-                "relationships": []
-            }
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "contract": {
+                "contract_id": "contract_123",
+                "filename": "agreement.pdf",
+                "risk_score": 5.0,
+                "risk_level": "medium"
+            },
+            "companies": [
+                {"name": "Acme Corp", "role": "vendor"},
+                {"name": "Client Inc", "role": "client"}
+            ],
+            "clauses": [
+                {
+                    "section_name": "Payment Terms",
+                    "content": "Payment within 30 days",
+                    "clause_type": "payment"
+                }
+            ],
+            "risk_factors": [
+                {
+                    "concern": "Late payment penalties unclear",
+                    "risk_level": "medium",
+                    "section": "Payment Terms"
+                }
+            ],
+            "relationships": []
         }
+    })

@@ -6,7 +6,13 @@ Provides reusable mocks and test data for unit and integration tests.
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def pytest_configure(config):
+    """Register custom markers."""
+    config.addinivalue_line("markers", "integration: marks tests as integration tests")
+    config.addinivalue_line("markers", "unit: marks tests as unit tests")
 
 
 @pytest.fixture
@@ -146,7 +152,7 @@ def sample_contract_metadata():
     """Sample contract metadata for testing."""
     return {
         "filename": "service_agreement.pdf",
-        "uploaded_at": datetime.utcnow().isoformat(),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
         "parties": ["Acme Corporation", "TechServ Inc."],
         "contract_type": "Service Agreement",
         "effective_date": "2025-01-01"
@@ -226,3 +232,91 @@ def sample_api_call_data():
         "operation_type": "risk_analysis",
         "contract_id": "test-contract-123"
     }
+
+
+# FalkorDB Integration Test Fixtures
+
+import os
+
+# Configurable FalkorDB test settings
+FALKORDB_TEST_HOST = os.getenv("FALKORDB_TEST_HOST", "localhost")
+FALKORDB_TEST_PORT = int(os.getenv("FALKORDB_TEST_PORT", "6381"))
+
+
+def is_falkordb_available() -> bool:
+    """Check if FalkorDB is available for testing."""
+    try:
+        from falkordb import FalkorDB
+        db = FalkorDB(host=FALKORDB_TEST_HOST, port=FALKORDB_TEST_PORT)
+        # Verify the graph module is loaded
+        graph = db.select_graph("_test_connection")
+        graph.query("RETURN 1")
+        return True
+    except Exception:
+        return False
+
+
+@pytest.fixture
+def sample_graph_contract():
+    """Sample contract node for graph store testing."""
+    from backend.models.graph_schemas import ContractNode
+    from uuid import uuid4
+
+    return ContractNode(
+        contract_id=f"test_contract_{uuid4().hex[:8]}",
+        filename="test_agreement.pdf",
+        upload_date=datetime.now(timezone.utc),
+        risk_score=6.5,
+        risk_level="medium",
+        payment_amount="$50,000",
+        payment_frequency="monthly",
+        has_termination_clause=True,
+        liability_cap="$100,000"
+    )
+
+
+@pytest.fixture
+def sample_graph_companies():
+    """Sample company nodes for graph store testing."""
+    from backend.models.graph_schemas import CompanyNode
+
+    return [
+        CompanyNode(name="Acme Corp", role="vendor", company_id="acme_001"),
+        CompanyNode(name="Client Inc", role="client", company_id="client_001"),
+    ]
+
+
+@pytest.fixture
+def sample_graph_clauses():
+    """Sample clause nodes for graph store testing."""
+    from backend.models.graph_schemas import ClauseNode
+
+    return [
+        ClauseNode(
+            section_name="Payment Terms",
+            content="Payment shall be made within 30 days of invoice.",
+            clause_type="payment",
+            importance="high"
+        ),
+        ClauseNode(
+            section_name="Termination",
+            content="Either party may terminate with 30 days notice.",
+            clause_type="termination",
+            importance="medium"
+        ),
+    ]
+
+
+@pytest.fixture
+def sample_graph_risk_factors():
+    """Sample risk factor nodes for graph store testing."""
+    from backend.models.graph_schemas import RiskFactorNode
+
+    return [
+        RiskFactorNode(
+            concern="Limited liability cap may be insufficient",
+            risk_level="medium",
+            section="Liability",
+            recommendation="Consider negotiating higher cap"
+        ),
+    ]

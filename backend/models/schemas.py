@@ -5,7 +5,7 @@ These models define the API request/response structures and data validation
 for contract analysis, risk assessment, and cost tracking.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Any
 
@@ -37,7 +37,7 @@ class RiskAnalysis(BaseModel):
         description="Identified compliance or regulatory issues"
     )
     analysis_timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When the analysis was performed"
     )
 
@@ -109,7 +109,7 @@ class ContractUploadResponse(BaseModel):
     )
     processing_time_ms: float = Field(..., description="Time taken to process the contract")
     upload_timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When the contract was uploaded"
     )
 
@@ -160,7 +160,7 @@ class QueryResponse(BaseModel):
     cost: float = Field(..., description="Cost of this query in USD")
     response_time_ms: float = Field(..., description="Time taken to generate response")
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When the query was processed"
     )
 
@@ -241,7 +241,7 @@ class ContractMetadata(BaseModel):
         description="Document language"
     )
     extracted_at: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When metadata was extracted"
     )
 
@@ -293,7 +293,7 @@ class ErrorResponse(BaseModel):
         description="Additional error details"
     )
     timestamp: datetime = Field(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         description="When the error occurred"
     )
 

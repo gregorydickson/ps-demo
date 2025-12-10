@@ -426,6 +426,6 @@ class ContractGraphStore:
 
     def close(self) -> None:
         """Close the FalkorDB connection."""
-        if hasattr(self, 'db'):
-            self.db.close()
+        if hasattr(self, 'db') and hasattr(self.db, 'connection'):
+            self.db.connection.close()
             logger.info("FalkorDB connection closed")
