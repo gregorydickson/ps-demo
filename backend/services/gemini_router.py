@@ -14,6 +14,20 @@ from dataclasses import dataclass
 
 import google.generativeai as genai
 from google.generativeai.types import GenerateContentResponse
+import google.api_core.exceptions
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log
+)
+
+try:
+    from ..services.api_resilience import gemini_breaker, with_circuit_breaker
+except ImportError:
+    from backend.services.api_resilience import gemini_breaker, with_circuit_breaker
 
 
 logger = logging.getLogger(__name__)
@@ -83,16 +97,28 @@ class GeminiRouter:
         ),
     }
 
-    def __init__(self, api_key: str):
+    def __init__(
+        self,
+        api_key: str,
+        default_timeout: float = 30.0,  # 30 seconds default
+        max_timeout: float = 120.0      # 2 minutes max
+    ):
         """
         Initialize the Gemini router.
 
         Args:
             api_key: Google AI API key for authentication
+            default_timeout: Default timeout in seconds for API calls
+            max_timeout: Maximum allowed timeout in seconds
         """
         genai.configure(api_key=api_key)
         self._api_key = api_key
-        logger.info("GeminiRouter initialized with model configurations")
+        self.default_timeout = default_timeout
+        self.max_timeout = max_timeout
+        logger.info(
+            f"GeminiRouter initialized with model configurations "
+            f"(timeout: {default_timeout}s, max: {max_timeout}s)"
+        )
 
     def get_model(
         self,
@@ -147,29 +173,56 @@ class GeminiRouter:
 
         return model
 
+    @with_circuit_breaker(gemini_breaker)
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((
+            google.api_core.exceptions.ServiceUnavailable,
+            google.api_core.exceptions.ResourceExhausted,
+            google.api_core.exceptions.DeadlineExceeded,
+            ConnectionError,
+        )),
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
     async def generate(
         self,
         prompt: str,
         complexity: TaskComplexity,
         thinking_budget: Optional[int] = None,
         system_instruction: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> GenerationResult:
         """
         Generate content using the appropriate model for the task complexity.
+
+        Features:
+        - Automatic retry on transient failures (up to 3 attempts)
+        - Circuit breaker to prevent cascading failures
+        - Configurable timeout with exponential backoff
 
         Args:
             prompt: Input prompt for generation
             complexity: Task complexity level
             thinking_budget: Token budget for thinking (reasoning models only)
             system_instruction: System instruction to configure model behavior
+            timeout: Optional timeout in seconds (defaults to default_timeout)
 
         Returns:
             GenerationResult with text, tokens, and cost information
 
         Raises:
-            Exception: If generation fails
+            TimeoutError: If generation exceeds timeout
+            ServiceUnavailableError: If circuit breaker is open
+            Exception: If generation fails after retries
         """
         start_time = time.time()
+
+        # Calculate effective timeout
+        effective_timeout = min(
+            timeout or self.default_timeout,
+            self.max_timeout
+        )
 
         try:
             model = self.get_model(
@@ -178,10 +231,13 @@ class GeminiRouter:
                 system_instruction=system_instruction,
             )
 
-            # Run blocking generate_content in thread pool
-            response = await asyncio.to_thread(
-                model.generate_content,
-                prompt
+            # Run blocking generate_content in thread pool with timeout
+            response = await asyncio.wait_for(
+                asyncio.to_thread(
+                    model.generate_content,
+                    prompt
+                ),
+                timeout=effective_timeout
             )
 
             # Extract response text
@@ -228,6 +284,15 @@ class GeminiRouter:
                 generation_time_ms=generation_time_ms,
             )
 
+        except asyncio.TimeoutError:
+            generation_time_ms = (time.time() - start_time) * 1000
+            logger.error(
+                f"Gemini API call timed out after {effective_timeout}s "
+                f"for {complexity.value} task"
+            )
+            raise TimeoutError(
+                f"Gemini API call timed out after {effective_timeout}s"
+            )
         except Exception as e:
             generation_time_ms = (time.time() - start_time) * 1000
             logger.error(

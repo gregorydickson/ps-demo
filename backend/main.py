@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Import services
 try:
@@ -26,6 +27,8 @@ try:
     from .services.graph_store import ContractGraphStore
     from .services.vector_store import ContractVectorStore
     from .workflows.contract_analysis_workflow import get_workflow
+    from .workflows.qa_workflow import QAWorkflow
+    from .utils.request_context import set_request_id, clear_request_context
     from .models.schemas import (
         ContractAnalysisResponse,
         ContractQueryRequest,
@@ -40,6 +43,8 @@ except ImportError:
     from backend.services.graph_store import ContractGraphStore
     from backend.services.vector_store import ContractVectorStore
     from backend.workflows.contract_analysis_workflow import get_workflow
+    from backend.workflows.qa_workflow import QAWorkflow
+    from backend.utils.request_context import set_request_id, clear_request_context
     from backend.models.schemas import (
         ContractAnalysisResponse,
         ContractQueryRequest,
@@ -55,6 +60,27 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+# Request Context Middleware
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Middleware to set request ID for each request."""
+
+    async def dispatch(self, request, call_next):
+        # Get request ID from header or generate new one
+        request_id = request.headers.get("X-Request-ID")
+        request_id = set_request_id(request_id)
+
+        # Add to request state for access in handlers
+        request.state.request_id = request_id
+
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-ID"] = request_id
+            return response
+        finally:
+            clear_request_context()
+
 
 # Create FastAPI application
 app = FastAPI(
@@ -74,10 +100,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add Request Context middleware
+app.add_middleware(RequestContextMiddleware)
+
 # Global service instances
 cost_tracker: Optional[CostTracker] = None
 graph_store: Optional[ContractGraphStore] = None
 workflow = None
+qa_workflow: Optional[QAWorkflow] = None
 
 
 @app.on_event("startup")
@@ -85,7 +115,7 @@ async def startup_event():
     """
     Initialize services on application startup.
     """
-    global cost_tracker, graph_store, workflow
+    global cost_tracker, graph_store, workflow, qa_workflow
 
     logger.info("Starting Contract Intelligence API...")
 
@@ -102,6 +132,10 @@ async def startup_event():
         # Initialize workflow
         workflow = get_workflow(initialize_stores=True)
         logger.info("Contract analysis workflow initialized")
+
+        # Initialize QA workflow
+        qa_workflow = QAWorkflow(cost_tracker=cost_tracker)
+        logger.info("QA workflow initialized")
 
         logger.info("All services initialized successfully")
 
@@ -262,8 +296,11 @@ async def query_contract(
     """
     Ask a question about a specific contract.
 
-    Uses semantic search on ChromaDB to find relevant sections,
-    then generates an answer using Gemini Flash-Lite.
+    Uses lightweight Q&A workflow for efficient querying:
+    1. Semantic search on ChromaDB to find relevant sections
+    2. Answer generation using Gemini Flash-Lite
+
+    This is much more efficient than running the full analysis workflow.
 
     Args:
         contract_id: The contract to query
@@ -274,43 +311,59 @@ async def query_contract(
 
     Raises:
         404: Contract not found
+        503: Q&A service not initialized
         500: Query processing error
     """
     logger.info(f"Query for contract {contract_id}: {request.query}")
 
-    try:
-        # For Q&A, we need to run just the qa node of the workflow
-        # We'll create a minimal state and run the workflow
-        # In production, you might want a separate QA-only workflow
-
-        # Run workflow with query
-        result = await workflow.run(
-            contract_id=contract_id,
-            file_bytes=b"",  # Not needed for query
-            filename="",  # Not needed for query
-            query=request.query
+    if not qa_workflow:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "ServiceUnavailable",
+                "message": "Q&A service not initialized"
+            }
         )
 
-        answer = result.get("answer")
-
-        if not answer:
+    try:
+        # Verify contract exists in graph store
+        contract_exists = await graph_store.get_contract_relationships(contract_id)
+        if not contract_exists:
             raise HTTPException(
                 status_code=404,
                 detail={
                     "error": "ContractNotFound",
-                    "message": f"Contract {contract_id} not found or has no stored data"
+                    "message": f"Contract {contract_id} not found"
+                }
+            )
+
+        # Run lightweight Q&A workflow
+        result = await qa_workflow.run(
+            contract_id=contract_id,
+            query=request.query
+        )
+
+        if result["error"]:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "QueryError",
+                    "message": result["error"]
                 }
             )
 
         response = ContractQueryResponse(
             contract_id=contract_id,
             query=request.query,
-            answer=answer,
-            cost=result.get("total_cost", 0.0),
-            relevant_sections=None  # Could extract from workflow if needed
+            answer=result["answer"],
+            cost=result["cost"],
+            relevant_sections=len(result["context_chunks"])
         )
 
-        logger.info(f"Query answered for contract {contract_id}")
+        logger.info(
+            f"Query answered for contract {contract_id} "
+            f"(cost: ${result['cost']:.6f})"
+        )
 
         return response
 

@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+*.md
+!README.md
+.env*
+.eslintrc*
+.prettierrc*
+jest.config.*
+vitest.config.*
+__tests__
+coverage
+Dockerfile
+.dockerignore
+.gitignore
+tsconfig.json
