@@ -468,6 +468,102 @@ def display_real_contracts(port: int = 6381):
         print()
 
 
+def display_agent_prompts():
+    """Display the AI agent prompts used for contract analysis."""
+    risk_prompt = """Analyze this legal contract for risk factors.
+
+CONTRACT TEXT:
+{parsed_text[:10000]}
+
+Provide analysis in JSON format:
+{
+    "risk_score": <0-10>,
+    "risk_level": "low|medium|high",
+    "concerning_clauses": [
+        {
+            "section": "section name",
+            "concern": "description",
+            "risk_level": "low|medium|high",
+            "recommendation": "suggestion"
+        }
+    ],
+    "key_terms": {
+        "payment_amount": "amount",
+        "payment_frequency": "frequency",
+        "termination_clause": true/false,
+        "liability_cap": "amount or unlimited"
+    }
+}"""
+
+    qa_prompt = """Based on the following contract excerpts, answer the user's question.
+
+CONTRACT EXCERPTS:
+{context}
+
+USER QUESTION: {query}
+
+Provide a clear, concise answer based only on the information in the
+contract excerpts above. If the answer cannot be determined from the
+provided context, say "This information is not found in the provided
+contract sections."
+
+ANSWER:"""
+
+    print(f"""
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║              🤖 AI AGENT PROMPTS & INSTRUCTIONS 🤖               ║
+    ╚══════════════════════════════════════════════════════════════════╝
+    """)
+
+    # Risk Analysis Prompt
+    print(f"    {colorize('┌─ 📊 RISK ANALYSIS AGENT ─────────────────────────────────────────┐', Colors.ORANGE)}")
+    print(f"    {colorize('│', Colors.ORANGE)} {colorize('Model:', Colors.BOLD)} gemini-2.5-flash (BALANCED complexity)                  {colorize('│', Colors.ORANGE)}")
+    print(f"    {colorize('│', Colors.ORANGE)} {colorize('Purpose:', Colors.BOLD)} Analyze contracts for risk factors and key terms       {colorize('│', Colors.ORANGE)}")
+    print(f"    {colorize('├──────────────────────────────────────────────────────────────────┤', Colors.ORANGE)}")
+
+    prompt_lines = risk_prompt.strip().split('\n')[:12]
+    for line in prompt_lines:
+        truncated = line[:60]
+        print(f"    {colorize('│', Colors.ORANGE)} {colorize(truncated, Colors.DIM):62s} {colorize('│', Colors.ORANGE)}")
+    print(f"    {colorize('│', Colors.ORANGE)} {colorize('...', Colors.DIM):62s} {colorize('│', Colors.ORANGE)}")
+    print(f"    {colorize('└──────────────────────────────────────────────────────────────────┘', Colors.ORANGE)}")
+
+    print()
+
+    # Q&A Prompt
+    print(f"    {colorize('┌─ 💬 Q&A AGENT ────────────────────────────────────────────────────┐', Colors.TEAL)}")
+    print(f"    {colorize('│', Colors.TEAL)} {colorize('Model:', Colors.BOLD)} gemini-2.5-flash-lite (SIMPLE complexity)               {colorize('│', Colors.TEAL)}")
+    print(f"    {colorize('│', Colors.TEAL)} {colorize('Purpose:', Colors.BOLD)} Answer user questions about contract content           {colorize('│', Colors.TEAL)}")
+    print(f"    {colorize('├──────────────────────────────────────────────────────────────────┤', Colors.TEAL)}")
+
+    qa_lines = qa_prompt.strip().split('\n')[:10]
+    for line in qa_lines:
+        truncated = line[:60]
+        print(f"    {colorize('│', Colors.TEAL)} {colorize(truncated, Colors.DIM):62s} {colorize('│', Colors.TEAL)}")
+    print(f"    {colorize('│', Colors.TEAL)} {colorize('...', Colors.DIM):62s} {colorize('│', Colors.TEAL)}")
+    print(f"    {colorize('└──────────────────────────────────────────────────────────────────┘', Colors.TEAL)}")
+
+    print()
+
+    # Model routing info
+    print(f"""    {colorize('┌─ 🎯 MODEL ROUTING STRATEGY ───────────────────────────────────────┐', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.SIMPLE', Colors.GREEN)}   → gemini-2.5-flash-lite  ($0.04/M)   {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ Quick Q&A, simple extraction                             {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.BALANCED', Colors.YELLOW)} → gemini-2.5-flash       ($0.075/M)  {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ Risk analysis, summaries, standard tasks                 {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.COMPLEX', Colors.ORANGE)}  → gemini-2.5-pro         ($0.15/M)   {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ Deep reasoning, complex legal analysis                   {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.REASONING', Colors.RED)} → gemini-3-pro           (Premium)   {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ Multi-step logic, complex reasoning chains               {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
+    {colorize('└──────────────────────────────────────────────────────────────────┘', Colors.PURPLE)}
+    """)
+
+
 def display_database_stats(port: int = 6381):
     """Display database statistics."""
     try:
@@ -746,6 +842,7 @@ Examples:
 
     # Show real contract data if requested
     if args.show_data:
+        display_agent_prompts()
         display_database_stats(args.port)
         display_real_contracts(args.port)
         return 0
