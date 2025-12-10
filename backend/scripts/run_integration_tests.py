@@ -10,6 +10,7 @@ Usage:
     python scripts/run_integration_tests.py
     python scripts/run_integration_tests.py --verbose
     python scripts/run_integration_tests.py --demo
+    python scripts/run_integration_tests.py --show-data   # Show actual contract data
 """
 
 import subprocess
@@ -19,7 +20,7 @@ import time
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 import argparse
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -322,6 +323,184 @@ def display_connection_status(port: int = 6381):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Real Contract Data Display
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_real_contracts(port: int = 6381) -> List[Dict[str, Any]]:
+    """Fetch actual contracts from FalkorDB."""
+    try:
+        from falkordb import FalkorDB
+        db = FalkorDB(host="localhost", port=port)
+        graph = db.select_graph("contracts")
+
+        # Query all contracts with their relationships
+        query = """
+        MATCH (c:Contract)
+        OPTIONAL MATCH (c)<-[:PARTY_TO]-(company:Company)
+        OPTIONAL MATCH (c)-[:CONTAINS]->(clause:Clause)
+        OPTIONAL MATCH (c)-[:HAS_RISK]->(risk:RiskFactor)
+        RETURN c.contract_id as contract_id,
+               c.filename as filename,
+               c.risk_score as risk_score,
+               c.risk_level as risk_level,
+               c.payment_amount as payment_amount,
+               c.payment_frequency as payment_frequency,
+               c.has_termination_clause as has_termination,
+               c.liability_cap as liability_cap,
+               collect(DISTINCT {name: company.name, role: company.role}) as companies,
+               collect(DISTINCT {name: clause.section_name, type: clause.clause_type, importance: clause.importance}) as clauses,
+               collect(DISTINCT {concern: risk.concern, level: risk.risk_level, section: risk.section}) as risks
+        """
+        result = graph.query(query)
+
+        contracts = []
+        for row in result.result_set:
+            contract = {
+                "contract_id": row[0],
+                "filename": row[1],
+                "risk_score": row[2],
+                "risk_level": row[3],
+                "payment_amount": row[4],
+                "payment_frequency": row[5],
+                "has_termination": row[6],
+                "liability_cap": row[7],
+                "companies": [c for c in row[8] if c.get("name")],
+                "clauses": [c for c in row[9] if c.get("name")],
+                "risks": [r for r in row[10] if r.get("concern")]
+            }
+            contracts.append(contract)
+
+        return contracts
+    except Exception as e:
+        return []
+
+
+def display_real_contracts(port: int = 6381):
+    """Display actual contract data from the database with beautiful formatting."""
+    contracts = get_real_contracts(port)
+
+    if not contracts:
+        print(f"""
+    ╭──────────────────────────────────────────────────────────────────╮
+    │  📭 No contracts found in database                               │
+    │                                                                  │
+    │  Import some contracts first:                                    │
+    │  {colorize('python scripts/import_test_documents.py --import', Colors.CYAN)}          │
+    ╰──────────────────────────────────────────────────────────────────╯
+        """)
+        return
+
+    print(f"""
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║            📊 LIVE CONTRACT DATA FROM FALKORDB 📊                ║
+    ║                   {colorize(f'{len(contracts)} contract(s) found', Colors.GREEN):43s}              ║
+    ╚══════════════════════════════════════════════════════════════════╝
+    """)
+
+    for i, contract in enumerate(contracts, 1):
+        # Contract header
+        risk_level = contract.get("risk_level", "unknown") or "unknown"
+        risk_score = contract.get("risk_score", 0) or 0
+        filename = contract.get("filename", "Unknown") or "Unknown"
+        contract_id = contract.get("contract_id", "")[:16] + "..." if contract.get("contract_id") else "N/A"
+
+        # Determine risk display
+        risk_display = display_risk_level(risk_level)
+
+        print(f"    ┌{'─' * 68}┐")
+        print(f"    │ 📄 CONTRACT #{i}: {colorize(filename[:45], Colors.BOLD):56s} │")
+        print(f"    │    ID: {colorize(contract_id, Colors.DIM):60s} │")
+        print(f"    ├{'─' * 68}┤")
+
+        # Risk info
+        print(f"    │ ⚠️  Risk Assessment:                                               │")
+        print(f"    │    Score: {colorize(f'{risk_score}/10', Colors.YELLOW if risk_score > 5 else Colors.GREEN):50s} │")
+        print(f"    │    Level: {risk_display:50s} │")
+
+        # Payment info
+        payment = contract.get("payment_amount") or "Not specified"
+        frequency = contract.get("payment_frequency") or ""
+        liability = contract.get("liability_cap") or "Not specified"
+        termination = "✅ Yes" if contract.get("has_termination") else "❌ No"
+
+        print(f"    ├{'─' * 68}┤")
+        print(f"    │ 💰 Financial Terms:                                                │")
+        print(f"    │    Payment: {colorize(str(payment)[:40], Colors.GREEN):52s} │")
+        if frequency:
+            print(f"    │    Frequency: {colorize(str(frequency)[:38], Colors.CYAN):50s} │")
+        print(f"    │    Liability Cap: {colorize(str(liability)[:35], Colors.YELLOW):46s} │")
+        print(f"    │    Termination Clause: {termination:42s} │")
+
+        # Companies
+        companies = contract.get("companies", [])
+        if companies:
+            print(f"    ├{'─' * 68}┤")
+            print(f"    │ 🏢 Parties ({len(companies)}):                                                │")
+            for comp in companies[:5]:  # Limit to 5
+                name = comp.get("name", "Unknown")[:30]
+                role = comp.get("role", "")[:15]
+                print(f"    │    • {colorize(name, Colors.CYAN):40s} ({role:15s})   │")
+
+        # Clauses
+        clauses = contract.get("clauses", [])
+        if clauses:
+            print(f"    ├{'─' * 68}┤")
+            print(f"    │ 📋 Key Clauses ({len(clauses)}):                                            │")
+            for clause in clauses[:5]:  # Limit to 5
+                name = clause.get("name", "Unknown")[:25]
+                ctype = clause.get("type", "")[:12]
+                importance = clause.get("importance", "")
+                imp_icon = "🔴" if importance == "high" else "🟡" if importance == "medium" else "🟢"
+                print(f"    │    {imp_icon} {colorize(name, Colors.BOLD):35s} [{ctype:12s}]      │")
+
+        # Risk Factors
+        risks = contract.get("risks", [])
+        if risks:
+            print(f"    ├{'─' * 68}┤")
+            print(f"    │ ⚡ Risk Factors ({len(risks)}):                                           │")
+            for risk in risks[:5]:  # Limit to 5
+                concern = risk.get("concern", "Unknown")[:55]
+                level = risk.get("level", "unknown")
+                level_icon = "🔴" if level == "high" else "🟡" if level == "medium" else "🟢"
+                print(f"    │    {level_icon} {concern:62s} │")
+
+        print(f"    └{'─' * 68}┘")
+        print()
+
+
+def display_database_stats(port: int = 6381):
+    """Display database statistics."""
+    try:
+        from falkordb import FalkorDB
+        db = FalkorDB(host="localhost", port=port)
+        graph = db.select_graph("contracts")
+
+        # Count nodes
+        stats = {}
+        for label in ["Contract", "Company", "Clause", "RiskFactor"]:
+            result = graph.query(f"MATCH (n:{label}) RETURN count(n) as count")
+            stats[label] = result.result_set[0][0] if result.result_set else 0
+
+        # Count relationships
+        rel_result = graph.query("MATCH ()-[r]->() RETURN count(r) as count")
+        rel_count = rel_result.result_set[0][0] if rel_result.result_set else 0
+
+        print(f"""
+    ╭──────────────────────────────────────────────────────────────────╮
+    │                    📈 DATABASE STATISTICS                        │
+    ├──────────────────────────────────────────────────────────────────┤
+    │  📄 Contracts:      {colorize(f'{stats.get("Contract", 0):5d}', Colors.CYAN):47s} │
+    │  🏢 Companies:      {colorize(f'{stats.get("Company", 0):5d}', Colors.CYAN):47s} │
+    │  📋 Clauses:        {colorize(f'{stats.get("Clause", 0):5d}', Colors.CYAN):47s} │
+    │  ⚠️  Risk Factors:   {colorize(f'{stats.get("RiskFactor", 0):5d}', Colors.CYAN):47s} │
+    │  🔗 Relationships:  {colorize(f'{rel_count:5d}', Colors.GREEN):47s} │
+    ╰──────────────────────────────────────────────────────────────────╯
+        """)
+    except Exception as e:
+        print(f"    ⚠️  Could not fetch stats: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Test Execution & Parsing
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -524,13 +703,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python scripts/run_integration_tests.py          # Run tests
-    python scripts/run_integration_tests.py --demo   # Show demo/preview
-    python scripts/run_integration_tests.py -v       # Verbose output
+    python scripts/run_integration_tests.py              # Run tests
+    python scripts/run_integration_tests.py --demo       # Show demo/preview
+    python scripts/run_integration_tests.py --show-data  # Show actual contract data
+    python scripts/run_integration_tests.py -v           # Verbose output
         """
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output")
     parser.add_argument("--demo", action="store_true", help="Run in demo mode (no actual tests)")
+    parser.add_argument("--show-data", action="store_true", help="Show actual contract data from database")
     parser.add_argument("--port", type=int, default=6381, help="FalkorDB port (default: 6381)")
     args = parser.parse_args()
 
@@ -562,6 +743,12 @@ Examples:
     Then run this script again.
         """)
         return 1
+
+    # Show real contract data if requested
+    if args.show_data:
+        display_database_stats(args.port)
+        display_real_contracts(args.port)
+        return 0
 
     # Show graph visualization
     print(f"\n    {colorize('📊 Testing Graph Operations:', Colors.BOLD)}")
