@@ -44,7 +44,6 @@ chroma_db/
 .coverage
 htmlcov/
 chroma_db_test/
-docs/test/
 
 # Claude Code IDE settings
 .claude/
