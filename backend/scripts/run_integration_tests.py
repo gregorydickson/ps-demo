@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+"""
+🔬 FalkorDB Integration Test Runner
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A visually stunning test runner for the Legal Contract Intelligence Platform.
+Runs FalkorDB graph store integration tests with beautiful output.
+
+Usage:
+    python scripts/run_integration_tests.py
+    python scripts/run_integration_tests.py --verbose
+    python scripts/run_integration_tests.py --demo
+"""
+
+import subprocess
+import sys
+import os
+import time
+import re
+from pathlib import Path
+from datetime import datetime
+from typing import List, Tuple, Optional
+import argparse
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ASCII Art & Styling
+# ═══════════════════════════════════════════════════════════════════════════════
+
+BANNER = r"""
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║   ███████╗ █████╗ ██╗     ██╗  ██╗ ██████╗ ██████╗ ██████╗ ██████╗           ║
+║   ██╔════╝██╔══██╗██║     ██║ ██╔╝██╔═══██╗██╔══██╗██╔══██╗██╔══██╗          ║
+║   █████╗  ███████║██║     █████╔╝ ██║   ██║██████╔╝██║  ██║██████╔╝          ║
+║   ██╔══╝  ██╔══██║██║     ██╔═██╗ ██║   ██║██╔══██╗██║  ██║██╔══██╗          ║
+║   ██║     ██║  ██║███████╗██║  ██╗╚██████╔╝██║  ██║██████╔╝██████╔╝          ║
+║   ╚═╝     ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝ ╚═════╝           ║
+║                                                                               ║
+║          🔬 Integration Test Suite for Graph Database Operations 🔬          ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+"""
+
+GRAPH_ART_TEMPLATE = """
+                         ┌─────────────────────┐
+                         │    📄 CONTRACT      │
+                         │    Risk: %RISK%     │
+                         └──────────┬──────────┘
+                                    │
+              ┌─────────────────────┼─────────────────────┐
+              │                     │                     │
+              ▼                     ▼                     ▼
+       ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
+       │ 🏢 COMPANY  │       │ 📋 CLAUSE   │       │ ⚠️  RISK    │
+       │  Acme Corp  │       │   Payment   │       │   Medium    │
+       └─────────────┘       └─────────────┘       └─────────────┘
+"""
+
+DOCKER_CHECK = r"""
+    ╭──────────────────────────────────────────────────────────────────╮
+    │  🐳 Checking Docker Container Status...                          │
+    ╰──────────────────────────────────────────────────────────────────╯
+"""
+
+SUCCESS_BOX = r"""
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║                                                                  ║
+    ║   ✅  ALL TESTS PASSED!                                          ║
+    ║                                                                  ║
+    ║   🎉 Your FalkorDB integration is working perfectly! 🎉          ║
+    ║                                                                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+"""
+
+FAILURE_BOX = r"""
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║                                                                  ║
+    ║   ❌  SOME TESTS FAILED                                          ║
+    ║                                                                  ║
+    ║   Check the output above for details.                            ║
+    ║                                                                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+"""
+
+SKIPPED_BOX = r"""
+    ╔══════════════════════════════════════════════════════════════════╗
+    ║                                                                  ║
+    ║   ⏭️   TESTS SKIPPED - FalkorDB Not Available                     ║
+    ║                                                                  ║
+    ║   Start FalkorDB with:                                           ║
+    ║   docker run -p 6381:6379 -p 3001:3000 -it --rm falkordb/falkordb║
+    ║                                                                  ║
+    ╚══════════════════════════════════════════════════════════════════╝
+"""
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Colors
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+    # Extended colors
+    ORANGE = '\033[38;5;208m'
+    PURPLE = '\033[38;5;141m'
+    PINK = '\033[38;5;213m'
+    TEAL = '\033[38;5;51m'
+    GOLD = '\033[38;5;220m'
+
+
+def colorize(text: str, color: str) -> str:
+    """Wrap text in color codes."""
+    return f"{color}{text}{Colors.END}"
+
+
+def print_colored(text: str, color: str = ""):
+    """Print text with optional color."""
+    if color:
+        print(colorize(text, color))
+    else:
+        print(text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Risk Level Display
+# ═══════════════════════════════════════════════════════════════════════════════
+
+RISK_DISPLAY = {
+    "low": {
+        "emoji": "🟢",
+        "bar": "▓░░░░",
+        "label": "LOW",
+        "color": Colors.GREEN,
+        "description": "Minimal concerns identified"
+    },
+    "medium": {
+        "emoji": "🟡",
+        "bar": "▓▓▓░░",
+        "label": "MEDIUM",
+        "color": Colors.YELLOW,
+        "description": "Some concerns require attention"
+    },
+    "high": {
+        "emoji": "🔴",
+        "bar": "▓▓▓▓▓",
+        "label": "HIGH",
+        "color": Colors.RED,
+        "description": "Critical issues - review required"
+    }
+}
+
+
+def display_risk_level(level: str) -> str:
+    """Format risk level with emoji and color."""
+    risk = RISK_DISPLAY.get(level.lower(), RISK_DISPLAY["medium"])
+    return f"{risk['emoji']} {colorize(risk['bar'], risk['color'])} {colorize(risk['label'], risk['color'])}"
+
+
+def display_risk_meter():
+    """Display the risk level legend."""
+    print("\n    📊 Risk Level Legend:")
+    print("    " + "─" * 50)
+    for level, info in RISK_DISPLAY.items():
+        label_padded = f"{info['label']:8s}"
+        print(f"    {info['emoji']} {colorize(info['bar'], info['color'])} {colorize(label_padded, info['color'])} │ {info['description']}")
+    print("    " + "─" * 50)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Progress Animation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SPINNERS = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+TEST_ICONS = {
+    "passed": "✅",
+    "failed": "❌",
+    "skipped": "⏭️ ",
+    "error": "💥",
+    "running": "🔄"
+}
+
+
+def animate_progress(message: str, duration: float = 0.5):
+    """Show an animated progress indicator."""
+    frames = len(SPINNERS)
+    for i in range(int(duration * 10)):
+        spinner = SPINNERS[i % frames]
+        sys.stdout.write(f"\r    {colorize(spinner, Colors.CYAN)} {message}")
+        sys.stdout.flush()
+        time.sleep(0.1)
+    sys.stdout.write("\r" + " " * (len(message) + 10) + "\r")
+    sys.stdout.flush()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Docker & FalkorDB Checks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def check_docker_running() -> bool:
+    """Check if Docker is running."""
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def check_falkordb_container() -> Tuple[bool, Optional[str]]:
+    """Check if FalkorDB container is running and get its info."""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "--filter", "ancestor=falkordb/falkordb", "--format", "{{.Names}}\t{{.Ports}}\t{{.Status}}"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.stdout.strip():
+            return True, result.stdout.strip()
+        return False, None
+    except Exception:
+        return False, None
+
+
+def check_falkordb_connection(host: str = "localhost", port: int = 6381) -> bool:
+    """Check if we can connect to FalkorDB."""
+    try:
+        from falkordb import FalkorDB
+        db = FalkorDB(host=host, port=port)
+        graph = db.select_graph("_connection_test")
+        graph.query("RETURN 1")
+        return True
+    except Exception:
+        return False
+
+
+def display_connection_status(port: int = 6381):
+    """Display comprehensive connection status."""
+    print(colorize(DOCKER_CHECK, Colors.CYAN))
+
+    checks = []
+
+    # Docker check
+    animate_progress("Checking Docker daemon...", 0.3)
+    docker_ok = check_docker_running()
+    checks.append(("Docker Daemon", docker_ok))
+
+    # Container check
+    animate_progress("Looking for FalkorDB container...", 0.3)
+    container_ok, container_info = check_falkordb_container()
+    checks.append(("FalkorDB Container", container_ok))
+
+    # Connection check
+    animate_progress(f"Testing connection on port {port}...", 0.3)
+    connection_ok = check_falkordb_connection(port=port)
+    checks.append(("Database Connection", connection_ok))
+
+    # Display results
+    print("    ┌─────────────────────────────────────────────────────────────┐")
+    print("    │ Service                    │ Status                         │")
+    print("    ├─────────────────────────────────────────────────────────────┤")
+
+    for name, status in checks:
+        icon = "✅" if status else "❌"
+        status_text = colorize("Connected", Colors.GREEN) if status else colorize("Not Found", Colors.RED)
+        print(f"    │ {icon} {name:24s} │ {status_text:40s} │")
+
+    print("    └─────────────────────────────────────────────────────────────┘")
+
+    if container_info:
+        print(f"\n    📦 Container Details: {colorize(container_info, Colors.DIM)}")
+
+    return all(ok for _, ok in checks)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Test Execution & Parsing
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_tests(verbose: bool = False) -> Tuple[int, str, dict]:
+    """Run pytest and capture output."""
+    test_path = Path(__file__).parent.parent / "tests" / "integration" / "test_graph_store_integration.py"
+
+    cmd = [
+        sys.executable, "-m", "pytest",
+        str(test_path),
+        "-v",
+        "--tb=short",
+        "-x" if not verbose else "",
+    ]
+    cmd = [c for c in cmd if c]  # Remove empty strings
+
+    # Set the environment
+    env = os.environ.copy()
+    env["FALKORDB_TEST_PORT"] = os.getenv("FALKORDB_TEST_PORT", "6381")
+
+    print(f"\n    🚀 Running: {colorize(' '.join(cmd), Colors.DIM)}\n")
+    print("    " + "═" * 66)
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parent.parent,
+        env=env
+    )
+
+    # Parse test results
+    stats = parse_test_output(result.stdout + result.stderr)
+
+    return result.returncode, result.stdout + result.stderr, stats
+
+
+def parse_test_output(output: str) -> dict:
+    """Parse pytest output for statistics."""
+    stats = {
+        "passed": 0,
+        "failed": 0,
+        "skipped": 0,
+        "errors": 0,
+        "duration": 0.0,
+        "tests": []
+    }
+
+    # Parse individual test results
+    test_pattern = r"(test_\w+)\s+(PASSED|FAILED|SKIPPED|ERROR)"
+    for match in re.finditer(test_pattern, output):
+        test_name = match.group(1)
+        status = match.group(2).lower()
+        stats["tests"].append({"name": test_name, "status": status})
+        stats[status if status != "error" else "errors"] += 1
+
+    # Parse summary line
+    summary_pattern = r"(\d+) passed"
+    match = re.search(summary_pattern, output)
+    if match:
+        stats["passed"] = int(match.group(1))
+
+    skip_pattern = r"(\d+) skipped"
+    match = re.search(skip_pattern, output)
+    if match:
+        stats["skipped"] = int(match.group(1))
+
+    fail_pattern = r"(\d+) failed"
+    match = re.search(fail_pattern, output)
+    if match:
+        stats["failed"] = int(match.group(1))
+
+    # Parse duration
+    duration_pattern = r"in ([\d.]+)s"
+    match = re.search(duration_pattern, output)
+    if match:
+        stats["duration"] = float(match.group(1))
+
+    return stats
+
+
+def display_test_results(output: str, stats: dict):
+    """Display formatted test results."""
+    print("\n    📋 Test Results:")
+    print("    " + "─" * 66)
+
+    # Display each test
+    for test in stats["tests"]:
+        icon = TEST_ICONS.get(test["status"], "❓")
+        name = test["name"].replace("test_", "").replace("_", " ").title()
+
+        if test["status"] == "passed":
+            color = Colors.GREEN
+        elif test["status"] == "failed":
+            color = Colors.RED
+        elif test["status"] == "skipped":
+            color = Colors.YELLOW
+        else:
+            color = Colors.RED
+
+        status_display = colorize(test["status"].upper(), color)
+        print(f"    {icon} {name:50s} │ {status_display}")
+
+    print("    " + "─" * 66)
+
+    # Summary statistics
+    passed_str = colorize(f"{stats['passed']:5d}", Colors.GREEN)
+    failed_str = colorize(f"{stats['failed']:5d}", Colors.RED)
+    skipped_str = colorize(f"{stats['skipped']:5d}", Colors.YELLOW)
+    duration_str = f"{stats['duration']:.2f}s"
+
+    print(f"""
+    ╭──────────────────────────────────────────────────────────────────╮
+    │                        📊 Test Summary                           │
+    ├──────────────────────────────────────────────────────────────────┤
+    │  ✅ Passed: {passed_str}    ❌ Failed: {failed_str}    ⏭️  Skipped: {skipped_str}   │
+    │  ⏱️  Duration: {duration_str}                                               │
+    ╰──────────────────────────────────────────────────────────────────╯
+    """)
+
+
+def display_graph_visualization():
+    """Display a sample graph structure."""
+    risk_display = display_risk_level("medium")
+    graph = GRAPH_ART_TEMPLATE.replace("%RISK%", "🟡 MED")
+    print(colorize(graph, Colors.CYAN))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Demo Mode
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_demo_mode():
+    """Run a visual demo of what the tests cover."""
+    print(colorize(BANNER, Colors.PURPLE))
+
+    print(f"""
+    {colorize('🎬 DEMO MODE', Colors.GOLD)} - Showing what the integration tests verify
+    {'═' * 66}
+    """)
+
+    # Show graph structure
+    print(f"\n    {colorize('📊 Graph Database Structure:', Colors.BOLD)}")
+    display_graph_visualization()
+
+    # Show risk levels
+    display_risk_meter()
+
+    # Test coverage summary
+    print(f"""
+    {colorize('🧪 Test Coverage:', Colors.BOLD)}
+    ┌────────────────────────────────────────────────────────────────────┐
+    │                                                                    │
+    │  📄 Contract CRUD Operations                                       │
+    │     ├── ✅ Store complete contract graph                           │
+    │     ├── ✅ Retrieve contract with relationships                    │
+    │     ├── ✅ Update existing contracts                               │
+    │     └── ✅ Delete contracts and related nodes                      │
+    │                                                                    │
+    │  🔍 Query Operations                                               │
+    │     ├── ✅ Find contracts by risk level                            │
+    │     ├── ✅ Handle non-existent contracts                           │
+    │     └── ✅ Store minimal contract data                             │
+    │                                                                    │
+    │  🔌 Connection Handling                                            │
+    │     ├── ✅ Connect with configured settings                        │
+    │     ├── ✅ Initialize schema/indexes                               │
+    │     └── ✅ Close connections properly                              │
+    │                                                                    │
+    └────────────────────────────────────────────────────────────────────┘
+    """)
+
+    # Sample test data
+    print(f"""
+    {colorize('📦 Sample Test Data:', Colors.BOLD)}
+    ┌────────────────────────────────────────────────────────────────────┐
+    │  Contract: test_agreement.pdf                                      │
+    │  ├── Risk Score: 6.5/10  {display_risk_level('medium')}                     │
+    │  ├── Payment: $50,000 monthly                                      │
+    │  └── Termination Clause: Yes ✅                                    │
+    │                                                                    │
+    │  Companies:                                                        │
+    │  ├── 🏢 Acme Corp (vendor)                                         │
+    │  └── 🏢 Client Inc (client)                                        │
+    │                                                                    │
+    │  Risk Factors:                                                     │
+    │  ├── {display_risk_level('medium')} Limited liability cap                  │
+    │  └── {display_risk_level('low')} Short termination notice                  │
+    └────────────────────────────────────────────────────────────────────┘
+    """)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="🔬 FalkorDB Integration Test Runner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+    python scripts/run_integration_tests.py          # Run tests
+    python scripts/run_integration_tests.py --demo   # Show demo/preview
+    python scripts/run_integration_tests.py -v       # Verbose output
+        """
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output")
+    parser.add_argument("--demo", action="store_true", help="Run in demo mode (no actual tests)")
+    parser.add_argument("--port", type=int, default=6381, help="FalkorDB port (default: 6381)")
+    args = parser.parse_args()
+
+    # Set port in environment
+    os.environ["FALKORDB_TEST_PORT"] = str(args.port)
+
+    # Print banner
+    print(colorize(BANNER, Colors.PURPLE))
+
+    if args.demo:
+        run_demo_mode()
+        return 0
+
+    # Print timestamp
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"    🕐 Started at: {colorize(now, Colors.DIM)}")
+    print(f"    📍 Port: {colorize(str(args.port), Colors.CYAN)}")
+
+    # Check connections
+    all_ok = display_connection_status(args.port)
+
+    if not all_ok:
+        print(colorize(SKIPPED_BOX, Colors.YELLOW))
+        print(f"""
+    💡 To start FalkorDB:
+
+       {colorize(f'docker run -p {args.port}:6379 -p 3001:3000 -it --rm falkordb/falkordb', Colors.CYAN)}
+
+    Then run this script again.
+        """)
+        return 1
+
+    # Show graph visualization
+    print(f"\n    {colorize('📊 Testing Graph Operations:', Colors.BOLD)}")
+    display_graph_visualization()
+
+    # Show risk meter
+    display_risk_meter()
+
+    # Run tests
+    print(f"\n    {colorize('🧪 Executing Test Suite...', Colors.BOLD)}")
+    return_code, output, stats = run_tests(args.verbose)
+
+    # Display results
+    display_test_results(output, stats)
+
+    # Show verbose output if requested
+    if args.verbose:
+        print(f"\n    {colorize('📜 Full Output:', Colors.DIM)}")
+        print("    " + "─" * 66)
+        for line in output.split("\n"):
+            print(f"    {line}")
+
+    # Final status
+    if stats["skipped"] > 0 and stats["passed"] == 0:
+        print(colorize(SKIPPED_BOX, Colors.YELLOW))
+        return 1
+    elif stats["failed"] > 0 or return_code != 0:
+        print(colorize(FAILURE_BOX, Colors.RED))
+        return 1
+    else:
+        print(colorize(SUCCESS_BOX, Colors.GREEN))
+
+        # Fun success message
+        print(f"""
+    {colorize('🌟 Graph Database Superpowers Verified:', Colors.GOLD)}
+
+       ╭─────────────────────────────────────────────╮
+       │  🔗 Relationships: CONNECTED                │
+       │  📊 Risk Analysis: OPERATIONAL              │
+       │  🔍 Queries: LIGHTNING FAST ⚡              │
+       │  💾 Storage: ROCK SOLID                     │
+       ╰─────────────────────────────────────────────╯
+        """)
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
