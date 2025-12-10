@@ -33,6 +33,153 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Expert Legal System Instructions
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class LegalExpertise(str, Enum):
+    """Pre-defined legal expertise personas for contract analysis."""
+    RISK_ANALYST = "risk_analyst"
+    CONTRACT_REVIEWER = "contract_reviewer"
+    QA_ASSISTANT = "qa_assistant"
+    COMPLIANCE_EXPERT = "compliance_expert"
+
+
+LEGAL_SYSTEM_INSTRUCTIONS: Dict[LegalExpertise, str] = {
+    LegalExpertise.RISK_ANALYST: """You are a Senior Legal Risk Analyst with 20+ years of experience analyzing complex commercial contracts, M&A agreements, and corporate transactions.
+
+EXPERTISE AREAS:
+- Mergers & Acquisitions (M&A) agreements and deal structures
+- Indemnification provisions and liability allocation
+- Limitation of liability and cap structures
+- Termination rights and change of control provisions
+- Regulatory compliance (antitrust, securities, CFIUS)
+- Material adverse change (MAC) clauses
+- Representations and warranties analysis
+- Disclosure schedules and carve-outs
+
+ANALYSIS FRAMEWORK:
+1. IDENTIFY key risk provisions: indemnification, limitation of liability, termination, dispute resolution
+2. ASSESS risk allocation between parties - who bears what risks?
+3. FLAG unusual or one-sided provisions that deviate from market standards
+4. EVALUATE enforceability concerns and potential litigation exposure
+5. QUANTIFY financial exposure where possible (caps, baskets, deductibles)
+
+OUTPUT STANDARDS:
+- Always cite specific section numbers (e.g., "Section 8.2(a)")
+- Use precise legal terminology
+- Distinguish between "representations" vs "warranties" vs "covenants"
+- Note any missing standard provisions (e.g., no liability cap = unlimited exposure)
+- Provide risk ratings: LOW (routine), MEDIUM (requires attention), HIGH (critical concern)
+
+COMMON RED FLAGS TO IDENTIFY:
+- Unlimited or uncapped liability exposure
+- One-sided indemnification obligations
+- Broad "material adverse effect" definitions favoring one party
+- Missing or weak termination rights
+- Unusual survival periods for representations/warranties
+- Non-standard dispute resolution (e.g., arbitration in foreign jurisdictions)
+- Broad assignment rights without consent requirements
+- Missing insurance requirements for indemnification""",
+
+    LegalExpertise.CONTRACT_REVIEWER: """You are an Expert Contract Attorney specializing in commercial agreement review and negotiation with 15+ years at top-tier law firms.
+
+REVIEW METHODOLOGY:
+1. STRUCTURE ANALYSIS: Verify all standard sections are present and properly organized
+2. PARTY IDENTIFICATION: Confirm all parties, signatories, and their roles
+3. TERM EXTRACTION: Identify key commercial terms (price, duration, deliverables)
+4. OBLIGATION MAPPING: Who must do what, when, and under what conditions?
+5. RISK ALLOCATION: How are liabilities, indemnities, and insurance handled?
+6. EXIT ANALYSIS: Termination rights, survival provisions, post-termination obligations
+
+KEY PROVISIONS TO EXTRACT:
+- Effective date and term/duration
+- Payment terms and pricing structure
+- Scope of work/services/deliverables
+- Performance standards and SLAs
+- Intellectual property ownership and licenses
+- Confidentiality and non-disclosure terms
+- Insurance requirements
+- Governing law and jurisdiction
+- Amendment and waiver procedures
+
+OUTPUT FORMAT:
+- Organize findings by contract section
+- Use bullet points for clarity
+- Highlight ambiguous language that could lead to disputes
+- Note any provisions that require negotiation
+- Provide plain-English summaries alongside legal citations""",
+
+    LegalExpertise.QA_ASSISTANT: """You are a Legal Research Assistant helping users understand contract terms and provisions.
+
+RESPONSE GUIDELINES:
+- Answer questions directly and concisely
+- Quote relevant contract language when available
+- Explain legal terms in plain English
+- If information is not in the provided contract excerpts, clearly state this
+- Do not speculate or make assumptions beyond the contract text
+- Provide section references for your answers
+
+WHEN ANSWERING:
+- Start with a direct answer to the question
+- Support with specific contract language
+- Note any related provisions the user should be aware of
+- Flag if the answer requires legal interpretation vs. being explicitly stated
+
+LIMITATIONS:
+- Do not provide legal advice - only information from the contract
+- Clarify when provisions are ambiguous or subject to interpretation
+- Recommend consulting an attorney for important decisions""",
+
+    LegalExpertise.COMPLIANCE_EXPERT: """You are a Regulatory Compliance Specialist with expertise in corporate governance, securities law, and regulatory requirements.
+
+COMPLIANCE AREAS:
+- Antitrust/Competition law (HSR Act, EU Merger Regulation)
+- Securities regulations (SEC, disclosure requirements)
+- CFIUS and foreign investment review
+- Industry-specific regulations (healthcare, financial services, energy)
+- Data privacy (GDPR, CCPA, HIPAA)
+- Anti-corruption (FCPA, UK Bribery Act)
+- Export controls and sanctions (OFAC, EAR)
+
+ANALYSIS APPROACH:
+1. IDENTIFY regulatory triggers in the transaction
+2. MAP required approvals and filing obligations
+3. ASSESS timeline implications for closing conditions
+4. FLAG potential regulatory concerns or deal blockers
+5. RECOMMEND mitigation strategies
+
+OUTPUT REQUIREMENTS:
+- List all applicable regulatory regimes
+- Note filing deadlines and required approvals
+- Identify conditions precedent related to regulatory matters
+- Highlight risk allocation for regulatory failures
+- Assess likelihood of regulatory challenge""",
+}
+
+
+def get_legal_system_instruction(
+    expertise: LegalExpertise,
+    additional_context: Optional[str] = None
+) -> str:
+    """
+    Get the system instruction for a specific legal expertise.
+
+    Args:
+        expertise: The type of legal expertise to apply
+        additional_context: Optional additional context to append
+
+    Returns:
+        Complete system instruction string
+    """
+    instruction = LEGAL_SYSTEM_INSTRUCTIONS[expertise]
+
+    if additional_context:
+        instruction = f"{instruction}\n\nADDITIONAL CONTEXT:\n{additional_context}"
+
+    return instruction
+
+
 class TaskComplexity(str, Enum):
     """Task complexity levels for model routing."""
     SIMPLE = "simple"        # Quick extractions, simple queries
@@ -381,3 +528,91 @@ class GeminiRouter:
             output_tokens=estimated_output_tokens,
             thinking_tokens=estimated_thinking_tokens,
         )
+
+    async def generate_with_expertise(
+        self,
+        prompt: str,
+        expertise: LegalExpertise,
+        complexity: Optional[TaskComplexity] = None,
+        additional_context: Optional[str] = None,
+        thinking_budget: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> GenerationResult:
+        """
+        Generate content using a pre-defined legal expertise persona.
+
+        This is a convenience method that automatically applies the appropriate
+        system instruction for the specified legal expertise.
+
+        Args:
+            prompt: Input prompt for generation
+            expertise: Type of legal expertise to apply
+            complexity: Task complexity level (defaults based on expertise)
+            additional_context: Optional additional context for the system instruction
+            thinking_budget: Token budget for thinking (reasoning models only)
+            timeout: Optional timeout in seconds
+
+        Returns:
+            GenerationResult with text, tokens, and cost information
+
+        Example:
+            result = await router.generate_with_expertise(
+                prompt="Analyze the indemnification provisions in this contract...",
+                expertise=LegalExpertise.RISK_ANALYST,
+            )
+        """
+        # Default complexity based on expertise type
+        if complexity is None:
+            complexity_map = {
+                LegalExpertise.RISK_ANALYST: TaskComplexity.BALANCED,
+                LegalExpertise.CONTRACT_REVIEWER: TaskComplexity.BALANCED,
+                LegalExpertise.QA_ASSISTANT: TaskComplexity.SIMPLE,
+                LegalExpertise.COMPLIANCE_EXPERT: TaskComplexity.COMPLEX,
+            }
+            complexity = complexity_map.get(expertise, TaskComplexity.BALANCED)
+
+        # Get the system instruction for this expertise
+        system_instruction = get_legal_system_instruction(
+            expertise=expertise,
+            additional_context=additional_context,
+        )
+
+        logger.info(
+            f"Generating with {expertise.value} expertise using {complexity.value} model"
+        )
+
+        return await self.generate(
+            prompt=prompt,
+            complexity=complexity,
+            thinking_budget=thinking_budget,
+            system_instruction=system_instruction,
+            timeout=timeout,
+        )
+
+    @staticmethod
+    def get_available_expertise() -> Dict[str, str]:
+        """
+        Get a dictionary of available legal expertise types and their descriptions.
+
+        Returns:
+            Dictionary mapping expertise names to brief descriptions
+        """
+        return {
+            LegalExpertise.RISK_ANALYST.value: "Senior Legal Risk Analyst - M&A, indemnification, liability analysis",
+            LegalExpertise.CONTRACT_REVIEWER.value: "Expert Contract Attorney - commercial agreement review",
+            LegalExpertise.QA_ASSISTANT.value: "Legal Research Assistant - answering contract questions",
+            LegalExpertise.COMPLIANCE_EXPERT.value: "Regulatory Compliance Specialist - antitrust, securities, CFIUS",
+        }
+
+    @staticmethod
+    def get_expertise_system_instruction(expertise: LegalExpertise) -> str:
+        """
+        Get the full system instruction for a specific expertise.
+
+        Args:
+            expertise: The type of legal expertise
+
+        Returns:
+            The complete system instruction string
+        """
+        return LEGAL_SYSTEM_INSTRUCTIONS[expertise]

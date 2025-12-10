@@ -469,79 +469,66 @@ def display_real_contracts(port: int = 6381):
 
 
 def display_agent_prompts():
-    """Display the AI agent prompts used for contract analysis."""
-    risk_prompt = """Analyze this legal contract for risk factors.
-
-CONTRACT TEXT:
-{parsed_text[:10000]}
-
-Provide analysis in JSON format:
-{
-    "risk_score": <0-10>,
-    "risk_level": "low|medium|high",
-    "concerning_clauses": [
-        {
-            "section": "section name",
-            "concern": "description",
-            "risk_level": "low|medium|high",
-            "recommendation": "suggestion"
-        }
-    ],
-    "key_terms": {
-        "payment_amount": "amount",
-        "payment_frequency": "frequency",
-        "termination_clause": true/false,
-        "liability_cap": "amount or unlimited"
-    }
-}"""
-
-    qa_prompt = """Based on the following contract excerpts, answer the user's question.
-
-CONTRACT EXCERPTS:
-{context}
-
-USER QUESTION: {query}
-
-Provide a clear, concise answer based only on the information in the
-contract excerpts above. If the answer cannot be determined from the
-provided context, say "This information is not found in the provided
-contract sections."
-
-ANSWER:"""
+    """Display the AI agent prompts and expert system instructions."""
 
     print(f"""
     ╔══════════════════════════════════════════════════════════════════╗
-    ║              🤖 AI AGENT PROMPTS & INSTRUCTIONS 🤖               ║
+    ║         🎓 EXPERT LEGAL SYSTEM INSTRUCTIONS (NEW!) 🎓            ║
     ╚══════════════════════════════════════════════════════════════════╝
     """)
 
-    # Risk Analysis Prompt
-    print(f"    {colorize('┌─ 📊 RISK ANALYSIS AGENT ─────────────────────────────────────────┐', Colors.ORANGE)}")
-    print(f"    {colorize('│', Colors.ORANGE)} {colorize('Model:', Colors.BOLD)} gemini-2.5-flash (BALANCED complexity)                  {colorize('│', Colors.ORANGE)}")
-    print(f"    {colorize('│', Colors.ORANGE)} {colorize('Purpose:', Colors.BOLD)} Analyze contracts for risk factors and key terms       {colorize('│', Colors.ORANGE)}")
-    print(f"    {colorize('├──────────────────────────────────────────────────────────────────┤', Colors.ORANGE)}")
+    # Expert personas
+    experts = [
+        ("RISK_ANALYST", "📊", "Senior Legal Risk Analyst", Colors.RED,
+         ["20+ years M&A experience", "Indemnification & liability analysis",
+          "RED FLAGS: Uncapped liability, one-sided indemnification",
+          "OUTPUT: Section citations, risk ratings (LOW/MEDIUM/HIGH)"]),
+        ("CONTRACT_REVIEWER", "📋", "Expert Contract Attorney", Colors.ORANGE,
+         ["15+ years at top-tier law firms", "Commercial agreement review",
+          "EXTRACTS: Payment terms, IP, termination rights",
+          "OUTPUT: Organized findings with plain-English summaries"]),
+        ("QA_ASSISTANT", "💬", "Legal Research Assistant", Colors.TEAL,
+         ["Direct, concise answers", "Quotes relevant contract language",
+          "Explains legal terms in plain English",
+          "LIMITATION: Information only, not legal advice"]),
+        ("COMPLIANCE_EXPERT", "⚖️", "Regulatory Compliance Specialist", Colors.PURPLE,
+         ["Antitrust (HSR Act, EU Merger Reg)", "Securities (SEC, CFIUS)",
+          "Data privacy (GDPR, CCPA, HIPAA)", "Anti-corruption (FCPA, UK Bribery Act)"]),
+    ]
 
-    prompt_lines = risk_prompt.strip().split('\n')[:12]
-    for line in prompt_lines:
-        truncated = line[:60]
-        print(f"    {colorize('│', Colors.ORANGE)} {colorize(truncated, Colors.DIM):62s} {colorize('│', Colors.ORANGE)}")
-    print(f"    {colorize('│', Colors.ORANGE)} {colorize('...', Colors.DIM):62s} {colorize('│', Colors.ORANGE)}")
-    print(f"    {colorize('└──────────────────────────────────────────────────────────────────┘', Colors.ORANGE)}")
+    for expertise, icon, title, color, points in experts:
+        print(f"    {colorize(f'┌─ {icon} {expertise} ', color)}{'─' * (52 - len(expertise))}{colorize('┐', color)}")
+        print(f"    {colorize('│', color)} {colorize(title, Colors.BOLD):62s} {colorize('│', color)}")
+        print(f"    {colorize('├', color)}{'─' * 66}{colorize('┤', color)}")
+        for point in points:
+            print(f"    {colorize('│', color)}   • {point:61s} {colorize('│', color)}")
+        print(f"    {colorize('└', color)}{'─' * 66}{colorize('┘', color)}")
+        print()
 
-    print()
+    # Show sample of actual system instruction
+    print(f"    {colorize('┌─ 📜 SAMPLE SYSTEM INSTRUCTION (RISK_ANALYST) ────────────────────┐', Colors.GOLD)}")
+    print(f"    {colorize('│', Colors.GOLD)}                                                                  {colorize('│', Colors.GOLD)}")
 
-    # Q&A Prompt
-    print(f"    {colorize('┌─ 💬 Q&A AGENT ────────────────────────────────────────────────────┐', Colors.TEAL)}")
-    print(f"    {colorize('│', Colors.TEAL)} {colorize('Model:', Colors.BOLD)} gemini-2.5-flash-lite (SIMPLE complexity)               {colorize('│', Colors.TEAL)}")
-    print(f"    {colorize('│', Colors.TEAL)} {colorize('Purpose:', Colors.BOLD)} Answer user questions about contract content           {colorize('│', Colors.TEAL)}")
-    print(f"    {colorize('├──────────────────────────────────────────────────────────────────┤', Colors.TEAL)}")
+    sample_lines = [
+        "You are a Senior Legal Risk Analyst with 20+ years of",
+        "experience analyzing complex commercial contracts...",
+        "",
+        "EXPERTISE AREAS:",
+        "- Mergers & Acquisitions (M&A) agreements",
+        "- Indemnification provisions and liability allocation",
+        "- Material adverse change (MAC) clauses",
+        "",
+        "COMMON RED FLAGS TO IDENTIFY:",
+        "- Unlimited or uncapped liability exposure",
+        "- One-sided indemnification obligations",
+        "- Broad 'material adverse effect' definitions...",
+    ]
 
-    qa_lines = qa_prompt.strip().split('\n')[:10]
-    for line in qa_lines:
-        truncated = line[:60]
-        print(f"    {colorize('│', Colors.TEAL)} {colorize(truncated, Colors.DIM):62s} {colorize('│', Colors.TEAL)}")
-    print(f"    {colorize('│', Colors.TEAL)} {colorize('...', Colors.DIM):62s} {colorize('│', Colors.TEAL)}")
-    print(f"    {colorize('└──────────────────────────────────────────────────────────────────┘', Colors.TEAL)}")
+    for line in sample_lines:
+        print(f"    {colorize('│', Colors.GOLD)}   {colorize(line, Colors.DIM):63s}{colorize('│', Colors.GOLD)}")
+
+    print(f"    {colorize('│', Colors.GOLD)}                                                                  {colorize('│', Colors.GOLD)}")
+    print(f"    {colorize('└──────────────────────────────────────────────────────────────────┘', Colors.GOLD)}")
 
     print()
 
@@ -549,16 +536,16 @@ ANSWER:"""
     print(f"""    {colorize('┌─ 🎯 MODEL ROUTING STRATEGY ───────────────────────────────────────┐', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.SIMPLE', Colors.GREEN)}   → gemini-2.5-flash-lite  ($0.04/M)   {colorize('│', Colors.PURPLE)}
-    {colorize('│', Colors.PURPLE)}     └─ Quick Q&A, simple extraction                             {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ QA_ASSISTANT expertise                                   {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.BALANCED', Colors.YELLOW)} → gemini-2.5-flash       ($0.075/M)  {colorize('│', Colors.PURPLE)}
-    {colorize('│', Colors.PURPLE)}     └─ Risk analysis, summaries, standard tasks                 {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ RISK_ANALYST, CONTRACT_REVIEWER expertise               {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.COMPLEX', Colors.ORANGE)}  → gemini-2.5-pro         ($0.15/M)   {colorize('│', Colors.PURPLE)}
-    {colorize('│', Colors.PURPLE)}     └─ Deep reasoning, complex legal analysis                   {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ COMPLIANCE_EXPERT expertise                              {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}  {colorize('TaskComplexity.REASONING', Colors.RED)} → gemini-3-pro           (Premium)   {colorize('│', Colors.PURPLE)}
-    {colorize('│', Colors.PURPLE)}     └─ Multi-step logic, complex reasoning chains               {colorize('│', Colors.PURPLE)}
+    {colorize('│', Colors.PURPLE)}     └─ Multi-step legal reasoning chains                        {colorize('│', Colors.PURPLE)}
     {colorize('│', Colors.PURPLE)}                                                                  {colorize('│', Colors.PURPLE)}
     {colorize('└──────────────────────────────────────────────────────────────────┘', Colors.PURPLE)}
     """)
