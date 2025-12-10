@@ -7,6 +7,7 @@ Google's text-embedding-004 model for embeddings.
 
 import os
 import logging
+import asyncio
 from typing import List, Dict, Any, Optional
 import chromadb
 from chromadb.config import Settings
@@ -278,7 +279,96 @@ class ContractVectorStore:
             logger.error(f"Error performing semantic search: {e}")
             raise
 
-    def delete_contract(self, contract_id: str) -> int:
+    async def global_search(
+        self,
+        query: str,
+        n_results: int = 20,
+        risk_level: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search across ALL contracts.
+
+        Args:
+            query: Search query text
+            n_results: Number of results to return
+            risk_level: Optional filter by risk level
+
+        Returns:
+            List of search results grouped by contract_id
+        """
+        try:
+            # Generate query embedding
+            query_result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=query,
+                task_type="retrieval_query"
+            )
+            query_embedding = query_result['embedding']
+
+            # Prepare where filter if risk_level specified
+            where_filter = {}
+            if risk_level:
+                where_filter["risk_level"] = risk_level
+
+            # Use asyncio.to_thread for the blocking ChromaDB call
+            results = await asyncio.to_thread(
+                self.collection.query,
+                query_embeddings=[query_embedding],
+                n_results=n_results,
+                where=where_filter if where_filter else None,
+                include=["documents", "metadatas", "distances"]
+            )
+
+            # Group results by contract_id
+            grouped = {}
+            if results['ids'] and results['ids'][0]:
+                for i in range(len(results['ids'][0])):
+                    metadata = results['metadatas'][0][i]
+                    cid = metadata.get("contract_id")
+
+                    if not cid:
+                        continue
+
+                    if cid not in grouped:
+                        grouped[cid] = {
+                            "contract_id": cid,
+                            "matches": [],
+                            "best_score": 1.0
+                        }
+
+                    # Add match with truncated text
+                    doc = results['documents'][0][i]
+                    distance = results['distances'][0][i]
+
+                    grouped[cid]["matches"].append({
+                        "text": doc[:200],
+                        "score": 1 - distance
+                    })
+
+                    # Track best score (lowest distance)
+                    grouped[cid]["best_score"] = min(
+                        grouped[cid]["best_score"],
+                        distance
+                    )
+
+            # Sort by best score (lowest distance first)
+            sorted_results = sorted(
+                grouped.values(),
+                key=lambda x: x["best_score"]
+            )
+
+            logger.info(
+                f"Global search returned {len(sorted_results)} contracts "
+                f"for query: '{query[:50]}...'"
+            )
+
+            return sorted_results
+
+        except Exception as e:
+            logger.error(f"Error performing global search: {e}")
+            raise
+
+    async def delete_contract(self, contract_id: str) -> int:
         """
         Delete all chunks associated with a contract.
 

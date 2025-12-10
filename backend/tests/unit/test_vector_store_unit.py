@@ -359,3 +359,148 @@ class TestVectorStoreUnit:
                         assert len(embeddings) == 150
                         # Each embedding should be a list of floats
                         assert all(isinstance(e, list) for e in embeddings)
+
+    @pytest.mark.asyncio
+    async def test_global_search_groups_by_contract_id(
+        self, mock_chroma_collection, mock_genai_embed_content
+    ):
+        """Test that global_search groups results by contract_id."""
+        # Setup mock search results with multiple contracts
+        mock_chroma_collection.query.return_value = {
+            'ids': [['chunk-1', 'chunk-2', 'chunk-3', 'chunk-4']],
+            'documents': [[
+                'Contract A payment clause',
+                'Contract B payment clause',
+                'Contract A termination clause',
+                'Contract C payment clause'
+            ]],
+            'metadatas': [[
+                {'contract_id': 'contract-a', 'chunk_index': 0},
+                {'contract_id': 'contract-b', 'chunk_index': 0},
+                {'contract_id': 'contract-a', 'chunk_index': 1},
+                {'contract_id': 'contract-c', 'chunk_index': 0}
+            ]],
+            'distances': [[0.15, 0.25, 0.30, 0.35]]
+        }
+
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            with patch('backend.services.vector_store.chromadb.PersistentClient') as mock_client:
+                with patch('backend.services.vector_store.genai.configure'):
+                    with patch('backend.services.vector_store.genai.embed_content', mock_genai_embed_content):
+                        mock_client_instance = MagicMock()
+                        mock_client_instance.get_or_create_collection.return_value = mock_chroma_collection
+                        mock_client.return_value = mock_client_instance
+
+                        store = ContractVectorStore(persist_directory="./test_db")
+                        store.collection = mock_chroma_collection
+
+                        results = await store.global_search(
+                            query="payment terms",
+                            n_results=20
+                        )
+
+                        # Should group into 3 contracts
+                        assert len(results) == 3
+
+                        # Contract A should have 2 matches
+                        contract_a = next(r for r in results if r["contract_id"] == "contract-a")
+                        assert len(contract_a["matches"]) == 2
+
+                        # Should be sorted by best score
+                        assert results[0]["best_score"] < results[1]["best_score"]
+
+    @pytest.mark.asyncio
+    async def test_global_search_filters_by_risk_level(
+        self, mock_chroma_collection, mock_genai_embed_content
+    ):
+        """Test that global_search can filter by risk level."""
+        mock_chroma_collection.query.return_value = {
+            'ids': [['chunk-1']],
+            'documents': [['Filtered result']],
+            'metadatas': [[{'contract_id': 'test-123', 'risk_level': 'high'}]],
+            'distances': [[0.1]]
+        }
+
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            with patch('backend.services.vector_store.chromadb.PersistentClient') as mock_client:
+                with patch('backend.services.vector_store.genai.configure'):
+                    with patch('backend.services.vector_store.genai.embed_content', mock_genai_embed_content):
+                        mock_client_instance = MagicMock()
+                        mock_client_instance.get_or_create_collection.return_value = mock_chroma_collection
+                        mock_client.return_value = mock_client_instance
+
+                        store = ContractVectorStore(persist_directory="./test_db")
+                        store.collection = mock_chroma_collection
+
+                        await store.global_search(
+                            query="Test query",
+                            n_results=20,
+                            risk_level="high"
+                        )
+
+                        # Verify where filter was used
+                        call_args = mock_chroma_collection.query.call_args[1]
+                        assert 'where' in call_args
+                        assert call_args['where'] == {"risk_level": "high"}
+
+    @pytest.mark.asyncio
+    async def test_global_search_truncates_match_text(
+        self, mock_chroma_collection, mock_genai_embed_content
+    ):
+        """Test that global_search truncates match text to 200 chars."""
+        long_text = "A" * 500
+        mock_chroma_collection.query.return_value = {
+            'ids': [['chunk-1']],
+            'documents': [[long_text]],
+            'metadatas': [[{'contract_id': 'test-123'}]],
+            'distances': [[0.1]]
+        }
+
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            with patch('backend.services.vector_store.chromadb.PersistentClient') as mock_client:
+                with patch('backend.services.vector_store.genai.configure'):
+                    with patch('backend.services.vector_store.genai.embed_content', mock_genai_embed_content):
+                        mock_client_instance = MagicMock()
+                        mock_client_instance.get_or_create_collection.return_value = mock_chroma_collection
+                        mock_client.return_value = mock_client_instance
+
+                        store = ContractVectorStore(persist_directory="./test_db")
+                        store.collection = mock_chroma_collection
+
+                        results = await store.global_search(
+                            query="Test query",
+                            n_results=20
+                        )
+
+                        # Match text should be truncated to 200 chars
+                        assert len(results[0]["matches"][0]["text"]) == 200
+
+    @pytest.mark.asyncio
+    async def test_global_search_handles_empty_results(
+        self, mock_chroma_collection, mock_genai_embed_content
+    ):
+        """Test that global_search handles empty search results."""
+        mock_chroma_collection.query.return_value = {
+            'ids': [[]],
+            'documents': [[]],
+            'metadatas': [[]],
+            'distances': [[]]
+        }
+
+        with patch.dict(os.environ, {'GOOGLE_API_KEY': 'test-key'}):
+            with patch('backend.services.vector_store.chromadb.PersistentClient') as mock_client:
+                with patch('backend.services.vector_store.genai.configure'):
+                    with patch('backend.services.vector_store.genai.embed_content', mock_genai_embed_content):
+                        mock_client_instance = MagicMock()
+                        mock_client_instance.get_or_create_collection.return_value = mock_chroma_collection
+                        mock_client.return_value = mock_client_instance
+
+                        store = ContractVectorStore(persist_directory="./test_db")
+                        store.collection = mock_chroma_collection
+
+                        results = await store.global_search(
+                            query="nonexistent query",
+                            n_results=20
+                        )
+
+                        assert results == []

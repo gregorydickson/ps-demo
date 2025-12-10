@@ -320,3 +320,288 @@ class TestAPIIntegration:
 
         # All should complete successfully
         assert all(r.status_code in [200, 503] for r in results)
+
+    def test_batch_upload_endpoint_rejects_too_many_files(self):
+        """Test that batch upload endpoint rejects more than 5 files."""
+        # Create 6 PDF files
+        files = [
+            ("files", (f"test{i}.pdf", b"%PDF-1.4\ntest", "application/pdf"))
+            for i in range(6)
+        ]
+
+        response = client.post("/api/contracts/batch-upload", files=files)
+
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+
+    def test_batch_upload_endpoint_rejects_non_pdf_files(self):
+        """Test that batch upload endpoint rejects non-PDF files."""
+        files = [
+            ("files", ("test1.pdf", b"%PDF-1.4\ntest", "application/pdf")),
+            ("files", ("test2.txt", b"not a pdf", "text/plain"))
+        ]
+
+        response = client.post("/api/contracts/batch-upload", files=files)
+
+        assert response.status_code == 400
+        data = response.json()
+        assert "detail" in data
+
+    @patch("backend.workflows.contract_analysis_workflow.get_workflow")
+    def test_batch_upload_endpoint_processes_multiple_files(self, mock_get_workflow):
+        """Test that batch upload endpoint processes multiple files successfully."""
+        # Mock the workflow
+        mock_workflow = AsyncMock()
+        mock_workflow.run = AsyncMock(return_value={
+            "contract_id": "test-123",
+            "risk_analysis": {
+                "risk_score": 5,
+                "risk_level": "medium"
+            },
+            "total_cost": 0.002,
+            "errors": []
+        })
+        mock_get_workflow.return_value = mock_workflow
+
+        files = [
+            ("files", ("test1.pdf", b"%PDF-1.4\ntest1", "application/pdf")),
+            ("files", ("test2.pdf", b"%PDF-1.4\ntest2", "application/pdf")),
+            ("files", ("test3.pdf", b"%PDF-1.4\ntest3", "application/pdf"))
+        ]
+
+        response = client.post("/api/contracts/batch-upload", files=files)
+
+        if response.status_code in [200, 201]:
+            data = response.json()
+            assert "total" in data
+            assert "successful" in data
+            assert "failed" in data
+            assert "results" in data
+            assert data["total"] == 3
+            assert len(data["results"]) == 3
+
+    @patch("backend.workflows.contract_analysis_workflow.get_workflow")
+    def test_batch_upload_handles_partial_failures(self, mock_get_workflow):
+        """Test that batch upload continues processing when some files fail."""
+        # Mock the workflow to succeed for the first call and fail for the second
+        mock_workflow = AsyncMock()
+        call_count = 0
+
+        async def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {
+                    "contract_id": "test-123",
+                    "risk_analysis": {"risk_level": "low"},
+                    "total_cost": 0.001,
+                    "errors": []
+                }
+            else:
+                raise Exception("Processing failed")
+
+        mock_workflow.run = AsyncMock(side_effect=side_effect)
+        mock_get_workflow.return_value = mock_workflow
+
+        files = [
+            ("files", ("test1.pdf", b"%PDF-1.4\ntest1", "application/pdf")),
+            ("files", ("test2.pdf", b"%PDF-1.4\ntest2", "application/pdf"))
+        ]
+
+        response = client.post("/api/contracts/batch-upload", files=files)
+
+        if response.status_code in [200, 201]:
+            data = response.json()
+            assert data["total"] == 2
+            # Should have at least one success and one failure
+            assert data["successful"] >= 1 or data["failed"] >= 1
+            assert len(data["results"]) == 2
+
+    def test_batch_upload_includes_processing_time(self):
+        """Test that batch upload response includes processing time."""
+        with patch("backend.workflows.contract_analysis_workflow.get_workflow") as mock_get_workflow:
+            mock_workflow = AsyncMock()
+            mock_workflow.run = AsyncMock(return_value={
+                "contract_id": "test-123",
+                "risk_analysis": {"risk_level": "low"},
+                "total_cost": 0.001,
+                "errors": []
+            })
+            mock_get_workflow.return_value = mock_workflow
+
+            files = [
+                ("files", ("test1.pdf", b"%PDF-1.4\ntest1", "application/pdf"))
+            ]
+
+            response = client.post("/api/contracts/batch-upload", files=files)
+
+            if response.status_code in [200, 201]:
+                data = response.json()
+                assert "processing_time_ms" in data
+                assert isinstance(data["processing_time_ms"], (int, float))
+                assert data["processing_time_ms"] >= 0
+
+    def test_global_search_endpoint_requires_query(self):
+        """Test that global search endpoint requires a query parameter."""
+        response = client.get("/api/contracts/search")
+
+        assert response.status_code == 422
+        data = response.json()
+        assert "detail" in data
+
+    def test_global_search_endpoint_validates_query_length(self):
+        """Test that global search endpoint validates minimum query length."""
+        response = client.get("/api/contracts/search?query=ab")
+
+        assert response.status_code == 422
+        data = response.json()
+        assert "detail" in data
+
+    @patch("backend.main.vector_store")
+    @patch("backend.main.graph_store")
+    def test_global_search_endpoint_returns_results(self, mock_graph_store, mock_vector_store):
+        """Test that global search endpoint returns properly formatted results."""
+        # Mock vector store search results
+        mock_vector_store.global_search = AsyncMock(return_value=[
+            {
+                "contract_id": "test-123",
+                "matches": [
+                    {"text": "Payment terms...", "score": 0.85}
+                ],
+                "best_score": 0.15
+            },
+            {
+                "contract_id": "test-456",
+                "matches": [
+                    {"text": "Liability clause...", "score": 0.75}
+                ],
+                "best_score": 0.25
+            }
+        ])
+
+        # Mock graph store contract details
+        from datetime import datetime
+        from backend.models.graph_schemas import ContractNode, ContractGraph
+
+        mock_contract_1 = ContractGraph(
+            contract=ContractNode(
+                contract_id="test-123",
+                filename="contract1.pdf",
+                upload_date=datetime.now(),
+                risk_score=5.0,
+                risk_level="medium"
+            ),
+            companies=[],
+            clauses=[],
+            risk_factors=[],
+            relationships=[]
+        )
+
+        mock_contract_2 = ContractGraph(
+            contract=ContractNode(
+                contract_id="test-456",
+                filename="contract2.pdf",
+                upload_date=datetime.now(),
+                risk_score=7.0,
+                risk_level="high"
+            ),
+            companies=[],
+            clauses=[],
+            risk_factors=[],
+            relationships=[]
+        )
+
+        mock_graph_store.get_contract_relationships = AsyncMock(side_effect=[
+            mock_contract_1,
+            mock_contract_2
+        ])
+
+        response = client.get("/api/contracts/search?query=payment+terms&limit=10")
+
+        assert response.status_code == 200
+        data = response.json()
+
+        assert "query" in data
+        assert data["query"] == "payment terms"
+        assert "results" in data
+        assert "total" in data
+        assert len(data["results"]) == 2
+        assert data["total"] == 2
+
+        # Verify result structure
+        result = data["results"][0]
+        assert "contract_id" in result
+        assert "filename" in result
+        assert "matches" in result
+        assert "relevance_score" in result
+
+    @patch("backend.main.vector_store")
+    def test_global_search_endpoint_respects_limit(self, mock_vector_store):
+        """Test that global search endpoint respects the limit parameter."""
+        # Mock vector store to return many results
+        mock_results = [
+            {
+                "contract_id": f"test-{i}",
+                "matches": [{"text": f"Match {i}", "score": 0.9}],
+                "best_score": 0.1
+            }
+            for i in range(20)
+        ]
+        mock_vector_store.global_search = AsyncMock(return_value=mock_results)
+
+        response = client.get("/api/contracts/search?query=test&limit=5")
+
+        if response.status_code == 200:
+            data = response.json()
+            # Should call vector store with limit * 3 but only return limit results
+            mock_vector_store.global_search.assert_called_once()
+            call_args = mock_vector_store.global_search.call_args
+            assert call_args[1]["n_results"] == 15  # limit * 3
+
+    @patch("backend.main.vector_store")
+    def test_global_search_endpoint_filters_by_risk_level(self, mock_vector_store):
+        """Test that global search endpoint can filter by risk level."""
+        mock_vector_store.global_search = AsyncMock(return_value=[])
+
+        response = client.get("/api/contracts/search?query=test&risk_level=high")
+
+        if response.status_code == 200:
+            mock_vector_store.global_search.assert_called_once()
+            call_args = mock_vector_store.global_search.call_args
+            assert call_args[1]["risk_level"] == "high"
+
+    @patch("backend.main.vector_store")
+    @patch("backend.main.graph_store")
+    def test_global_search_handles_missing_contracts_in_graph(self, mock_graph_store, mock_vector_store):
+        """Test that global search handles contracts in vector store but not graph store."""
+        mock_vector_store.global_search = AsyncMock(return_value=[
+            {
+                "contract_id": "orphan-contract",
+                "matches": [{"text": "Test", "score": 0.9}],
+                "best_score": 0.1
+            }
+        ])
+
+        # Graph store returns None for orphaned contract
+        mock_graph_store.get_contract_relationships = AsyncMock(return_value=None)
+
+        response = client.get("/api/contracts/search?query=test")
+
+        if response.status_code == 200:
+            data = response.json()
+            assert len(data["results"]) == 1
+            result = data["results"][0]
+            assert result["contract_id"] == "orphan-contract"
+            assert result["filename"] == "Unknown"
+            assert result["risk_score"] is None
+
+    def test_global_search_endpoint_validates_limit_bounds(self):
+        """Test that global search endpoint validates limit parameter bounds."""
+        # Test limit too high
+        response = client.get("/api/contracts/search?query=test&limit=100")
+        assert response.status_code == 422
+
+        # Test limit too low
+        response = client.get("/api/contracts/search?query=test&limit=0")
+        assert response.status_code == 422

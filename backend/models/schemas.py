@@ -352,3 +352,97 @@ class ContractDetailsResponse(BaseModel):
         default_factory=list,
         description="Identified risk factors"
     )
+
+
+class GlobalSearchResponse(BaseModel):
+    """Response for global contract search across all contracts."""
+    query: str = Field(..., description="The search query used")
+    results: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="List of matching contracts with their details"
+    )
+    total: int = Field(..., description="Total number of matching contracts")
+
+
+class ContractSummary(BaseModel):
+    """Summary for list view."""
+    contract_id: str = Field(..., description="Contract identifier")
+    filename: str = Field(..., description="Original filename")
+    upload_date: datetime = Field(..., description="When contract was uploaded")
+    risk_score: Optional[float] = Field(None, description="Risk score (0-10)")
+    risk_level: Optional[str] = Field(None, description="Risk level (low/medium/high)")
+    party_count: int = Field(default=0, description="Number of parties in the contract")
+
+
+class ContractListResponse(BaseModel):
+    """Paginated contract list."""
+    contracts: List[ContractSummary] = Field(
+        default_factory=list,
+        description="List of contract summaries"
+    )
+    total: int = Field(..., description="Total number of contracts matching filters")
+    page: int = Field(..., description="Current page number")
+    page_size: int = Field(..., description="Number of items per page")
+    has_more: bool = Field(..., description="Whether there are more pages available")
+
+
+class BatchUploadResult(BaseModel):
+    """Result for a single file in a batch upload."""
+    filename: str = Field(..., description="Original filename")
+    contract_id: Optional[str] = Field(None, description="Contract ID if successful")
+    status: str = Field(..., description="Status: 'success' or 'failed'")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    risk_level: Optional[str] = Field(None, description="Risk level if successful")
+
+
+class BatchUploadResponse(BaseModel):
+    """Response after batch uploading multiple contracts."""
+    total: int = Field(..., description="Total number of files uploaded")
+    successful: int = Field(..., description="Number of successfully processed files")
+    failed: int = Field(..., description="Number of failed files")
+    results: List[BatchUploadResult] = Field(
+        default_factory=list,
+        description="Individual results for each file"
+    )
+    total_cost: float = Field(..., description="Total cost across all files in USD")
+    processing_time_ms: float = Field(..., description="Total processing time in milliseconds")
+
+
+class ContractComparisonRequest(BaseModel):
+    """Request to compare two contracts."""
+    contract_id_a: str = Field(..., description="First contract ID to compare")
+    contract_id_b: str = Field(..., description="Second contract ID to compare")
+    aspects: List[str] = Field(
+        default=["payment_terms", "liability", "termination", "indemnification"],
+        description="Aspects to compare between contracts"
+    )
+
+    @field_validator("aspects")
+    @classmethod
+    def validate_aspects(cls, v: List[str]) -> List[str]:
+        """Validate that aspects list is not empty and has reasonable length."""
+        if not v:
+            raise ValueError("At least one aspect must be specified")
+        if len(v) > 10:
+            raise ValueError("Maximum 10 aspects allowed per comparison")
+        return v
+
+
+class ContractComparisonResponse(BaseModel):
+    """Response from contract comparison."""
+    contract_a: Dict[str, str] = Field(
+        ...,
+        description="First contract metadata (id, filename)"
+    )
+    contract_b: Dict[str, str] = Field(
+        ...,
+        description="Second contract metadata (id, filename)"
+    )
+    comparisons: List[Dict[str, Any]] = Field(
+        ...,
+        description="Comparison results for each aspect"
+    )
+    total_cost: float = Field(
+        ...,
+        description="Total API cost for comparison in USD"
+    )

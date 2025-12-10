@@ -142,11 +142,11 @@ def sample_risk_factors():
 
 
 @pytest.fixture
-def cleanup_contract(graph_store, sample_contract_id):
+async def cleanup_contract(graph_store, sample_contract_id):
     """Cleanup fixture to ensure contract is deleted after test."""
     yield
     try:
-        graph_store.delete_contract(sample_contract_id)
+        await graph_store.delete_contract(sample_contract_id)
     except Exception:
         pass  # Ignore cleanup errors
 
@@ -289,12 +289,12 @@ class TestContractGraphStoreIntegration:
             # Cleanup
             for contract_id in contracts_to_cleanup:
                 try:
-                    graph_store.delete_contract(contract_id)
+                    await graph_store.delete_contract(contract_id)
                 except Exception:
                     pass
 
     @pytest.mark.integration
-    def test_delete_contract_removes_all_related_nodes(
+    async def test_delete_contract_removes_all_related_nodes(
         self,
         graph_store,
         sample_contract_node,
@@ -303,38 +303,30 @@ class TestContractGraphStoreIntegration:
         sample_risk_factors
     ):
         """Test that deleting a contract removes all related nodes."""
-        import asyncio
-
         # Store the contract
-        asyncio.get_event_loop().run_until_complete(
-            graph_store.store_contract(
-                contract=sample_contract_node,
-                companies=sample_companies,
-                clauses=sample_clauses,
-                risk_factors=sample_risk_factors
-            )
+        await graph_store.store_contract(
+            contract=sample_contract_node,
+            companies=sample_companies,
+            clauses=sample_clauses,
+            risk_factors=sample_risk_factors
         )
 
         # Verify it exists
-        result = asyncio.get_event_loop().run_until_complete(
-            graph_store.get_contract_relationships(sample_contract_node.contract_id)
-        )
+        result = await graph_store.get_contract_relationships(sample_contract_node.contract_id)
         assert result is not None
 
         # Delete it
-        deleted = graph_store.delete_contract(sample_contract_node.contract_id)
+        deleted = await graph_store.delete_contract(sample_contract_node.contract_id)
         assert deleted is True
 
         # Verify it's gone
-        result = asyncio.get_event_loop().run_until_complete(
-            graph_store.get_contract_relationships(sample_contract_node.contract_id)
-        )
+        result = await graph_store.get_contract_relationships(sample_contract_node.contract_id)
         assert result is None
 
     @pytest.mark.integration
-    def test_delete_nonexistent_contract_returns_false(self, graph_store):
+    async def test_delete_nonexistent_contract_returns_false(self, graph_store):
         """Test that deleting a non-existent contract returns False."""
-        result = graph_store.delete_contract("nonexistent_contract_id")
+        result = await graph_store.delete_contract("nonexistent_contract_id")
         assert result is False
 
     @pytest.mark.integration

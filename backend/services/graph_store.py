@@ -390,7 +390,106 @@ class ContractGraphStore:
             logger.error(f"Error finding similar contracts: {e}")
             raise
 
-    def delete_contract(self, contract_id: str) -> bool:
+    async def list_contracts(
+        self,
+        skip: int = 0,
+        limit: int = 20,
+        risk_level: Optional[str] = None,
+        sort_by: str = "upload_date",
+        sort_order: str = "desc"
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """
+        List contracts with pagination, filtering, and sorting.
+
+        Args:
+            skip: Number of records to skip (for pagination)
+            limit: Maximum number of records to return
+            risk_level: Optional filter by risk level (low/medium/high)
+            sort_by: Field to sort by (upload_date, risk_score, filename)
+            sort_order: Sort order (asc/desc)
+
+        Returns:
+            Tuple of (contracts list, total count)
+        """
+        import asyncio
+
+        def _list_contracts():
+            # Build WHERE clause for filtering
+            where_clause = ""
+            params = {}
+
+            if risk_level:
+                where_clause = "WHERE c.risk_level = $risk_level"
+                params['risk_level'] = risk_level
+
+            # Build ORDER BY clause
+            sort_field_map = {
+                "upload_date": "c.upload_date",
+                "risk_score": "c.risk_score",
+                "filename": "c.filename"
+            }
+            sort_field = sort_field_map.get(sort_by, "c.upload_date")
+            order_direction = "DESC" if sort_order.lower() == "desc" else "ASC"
+
+            # Get total count
+            count_query = f"""
+                MATCH (c:Contract)
+                {where_clause}
+                RETURN count(c) as total
+            """
+            count_result = self.graph.query(count_query, params)
+            total = count_result.result_set[0][0] if count_result.result_set else 0
+
+            # Get paginated results with party count
+            list_query = f"""
+                MATCH (c:Contract)
+                {where_clause}
+                OPTIONAL MATCH (co:Company)-[:PARTY_TO]->(c)
+                WITH c, count(DISTINCT co) as party_count
+                RETURN c.contract_id as contract_id,
+                       c.filename as filename,
+                       c.upload_date as upload_date,
+                       c.risk_score as risk_score,
+                       c.risk_level as risk_level,
+                       party_count
+                ORDER BY {sort_field} {order_direction}
+                SKIP $skip
+                LIMIT $limit
+            """
+            params.update({'skip': skip, 'limit': limit})
+
+            list_result = self.graph.query(list_query, params)
+
+            contracts = []
+            if list_result.result_set:
+                for record in list_result.result_set:
+                    contracts.append({
+                        'contract_id': record[0],
+                        'filename': record[1],
+                        'upload_date': record[2],
+                        'risk_score': record[3],
+                        'risk_level': record[4],
+                        'party_count': record[5] if record[5] is not None else 0
+                    })
+
+            return contracts, total
+
+        try:
+            # Use asyncio.to_thread for the blocking call
+            contracts, total = await asyncio.to_thread(_list_contracts)
+
+            logger.info(
+                f"Listed {len(contracts)} contracts (total: {total}, "
+                f"skip: {skip}, limit: {limit}, risk_level: {risk_level})"
+            )
+
+            return contracts, total
+
+        except Exception as e:
+            logger.error(f"Error listing contracts: {e}")
+            raise
+
+    async def delete_contract(self, contract_id: str) -> bool:
         """
         Delete contract and all related nodes.
 
@@ -400,7 +499,9 @@ class ContractGraphStore:
         Returns:
             True if deleted, False if not found
         """
-        try:
+        import asyncio
+
+        def _delete():
             result = self.graph.query(
                 """
                 MATCH (c:Contract {contract_id: $contract_id})
@@ -410,8 +511,11 @@ class ContractGraphStore:
                 """,
                 {'contract_id': contract_id}
             )
+            return len(result.result_set) > 0 and result.result_set[0][0] > 0
 
-            deleted = len(result.result_set) > 0 and result.result_set[0][0] > 0
+        try:
+            # Use asyncio.to_thread for the blocking call
+            deleted = await asyncio.to_thread(_delete)
 
             if deleted:
                 logger.info(f"Deleted contract graph: {contract_id}")

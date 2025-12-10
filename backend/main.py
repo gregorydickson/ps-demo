@@ -12,12 +12,13 @@ import os
 import logging
 import time
 import uuid
+import asyncio
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # Import services
@@ -34,8 +35,15 @@ try:
         ContractQueryRequest,
         ContractQueryResponse,
         ContractDetailsResponse,
+        ContractSummary,
+        ContractListResponse,
+        ContractComparisonRequest,
+        ContractComparisonResponse,
         CostAnalytics,
-        ErrorResponse
+        ErrorResponse,
+        BatchUploadResult,
+        BatchUploadResponse,
+        GlobalSearchResponse
     )
 except ImportError:
     # Fall back to absolute imports (when run directly)
@@ -50,8 +58,15 @@ except ImportError:
         ContractQueryRequest,
         ContractQueryResponse,
         ContractDetailsResponse,
+        ContractSummary,
+        ContractListResponse,
+        ContractComparisonRequest,
+        ContractComparisonResponse,
         CostAnalytics,
-        ErrorResponse
+        ErrorResponse,
+        BatchUploadResult,
+        BatchUploadResponse,
+        GlobalSearchResponse
     )
 
 # Configure logging
@@ -106,6 +121,7 @@ app.add_middleware(RequestContextMiddleware)
 # Global service instances
 cost_tracker: Optional[CostTracker] = None
 graph_store: Optional[ContractGraphStore] = None
+vector_store: Optional[ContractVectorStore] = None
 workflow = None
 qa_workflow: Optional[QAWorkflow] = None
 
@@ -115,7 +131,7 @@ async def startup_event():
     """
     Initialize services on application startup.
     """
-    global cost_tracker, graph_store, workflow, qa_workflow
+    global cost_tracker, graph_store, vector_store, workflow, qa_workflow
 
     logger.info("Starting Contract Intelligence API...")
 
@@ -128,6 +144,10 @@ async def startup_event():
         # Initialize ContractGraphStore
         graph_store = ContractGraphStore()
         logger.info("ContractGraphStore initialized with Neo4j")
+
+        # Initialize ContractVectorStore
+        vector_store = ContractVectorStore()
+        logger.info("ContractVectorStore initialized with ChromaDB")
 
         # Initialize workflow
         workflow = get_workflow(initialize_stores=True)
@@ -285,6 +305,133 @@ async def upload_contract(
 
 
 @app.post(
+    "/api/contracts/batch-upload",
+    response_model=BatchUploadResponse,
+    tags=["Contracts"],
+    status_code=201
+)
+async def batch_upload_contracts(
+    files: List[UploadFile] = File(..., description="PDF files (max 5)")
+):
+    """
+    Upload and analyze multiple contracts concurrently.
+
+    This endpoint:
+    1. Validates all files are PDFs
+    2. Processes up to 5 files concurrently
+    3. Returns individual results for each file
+    4. Continues processing even if some files fail
+
+    Args:
+        files: List of PDF contract files to analyze (max 5)
+
+    Returns:
+        BatchUploadResponse with individual results and aggregate statistics
+
+    Raises:
+        400: Too many files (>5) or invalid file types
+        500: Processing error
+    """
+    start_time = time.time()
+
+    # Validate maximum file count
+    if len(files) > 5:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "TooManyFiles",
+                "message": "Maximum 5 files per batch upload",
+                "provided": len(files)
+            }
+        )
+
+    # Validate all files are PDFs
+    for file in files:
+        if not file.filename.endswith('.pdf'):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "InvalidFileType",
+                    "message": f"All files must be PDFs. Invalid file: {file.filename}",
+                    "filename": file.filename
+                }
+            )
+
+    logger.info(f"Batch upload started with {len(files)} files")
+
+    async def process_one_file(file: UploadFile) -> BatchUploadResult:
+        """Process a single file and return its result."""
+        try:
+            # Generate contract ID
+            contract_id = str(uuid.uuid4())
+
+            # Read file bytes
+            file_bytes = await file.read()
+
+            logger.info(f"Processing {file.filename} (contract {contract_id})")
+
+            # Run workflow
+            result = await workflow.run(
+                contract_id=contract_id,
+                file_bytes=file_bytes,
+                filename=file.filename,
+                query=None  # No query for upload
+            )
+
+            # Extract risk level
+            risk_level = None
+            if result.get("risk_analysis"):
+                risk_level = result["risk_analysis"].get("risk_level")
+
+            logger.info(f"Successfully processed {file.filename} (risk: {risk_level})")
+
+            return BatchUploadResult(
+                filename=file.filename,
+                contract_id=contract_id,
+                status="success",
+                risk_level=risk_level
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to process {file.filename}: {e}", exc_info=True)
+            return BatchUploadResult(
+                filename=file.filename,
+                status="failed",
+                error=str(e)
+            )
+
+    # Process all files concurrently
+    results = await asyncio.gather(*[process_one_file(f) for f in files])
+
+    # Calculate aggregate statistics
+    successful = sum(1 for r in results if r.status == "success")
+    failed = len(files) - successful
+    processing_time = (time.time() - start_time) * 1000  # Convert to ms
+
+    # Calculate total cost from cost tracker
+    # Note: Individual API calls are already tracked within the workflow
+    # This would ideally sum up costs from the results, but since we don't
+    # return cost per file, we'll set it to 0.0 for now
+    total_cost = 0.0
+
+    response = BatchUploadResponse(
+        total=len(files),
+        successful=successful,
+        failed=failed,
+        results=results,
+        total_cost=total_cost,
+        processing_time_ms=processing_time
+    )
+
+    logger.info(
+        f"Batch upload completed: {successful}/{len(files)} successful "
+        f"in {processing_time:.0f}ms"
+    )
+
+    return response
+
+
+@app.post(
     "/api/contracts/{contract_id}/query",
     response_model=ContractQueryResponse,
     tags=["Contracts"]
@@ -376,6 +523,136 @@ async def query_contract(
             detail={
                 "error": "QueryError",
                 "message": "Failed to process query",
+                "details": str(e)
+            }
+        )
+
+
+@app.get(
+    "/api/contracts",
+    response_model=ContractListResponse,
+    tags=["Contracts"]
+)
+async def list_contracts(
+    page: int = Query(1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(20, ge=1, le=100, description="Number of items per page (max 100)"),
+    risk_level: Optional[str] = Query(None, description="Filter by risk level (low/medium/high)"),
+    sort_by: str = Query("upload_date", description="Sort by field (upload_date, risk_score, filename)"),
+    sort_order: str = Query("desc", description="Sort order (asc/desc)")
+):
+    """
+    List all contracts with pagination, filtering, and sorting.
+
+    Supports:
+    - Pagination (page, page_size)
+    - Filtering by risk_level
+    - Sorting by upload_date, risk_score, or filename
+    - Sort order (ascending or descending)
+
+    Args:
+        page: Page number (1-indexed)
+        page_size: Number of items per page (max 100)
+        risk_level: Optional filter by risk level
+        sort_by: Field to sort by
+        sort_order: Sort direction (asc/desc)
+
+    Returns:
+        ContractListResponse with paginated contract summaries
+
+    Raises:
+        400: Invalid query parameters
+        500: Retrieval error
+    """
+    logger.info(
+        f"Listing contracts: page={page}, page_size={page_size}, "
+        f"risk_level={risk_level}, sort_by={sort_by}, sort_order={sort_order}"
+    )
+
+    # Validate risk_level if provided
+    if risk_level and risk_level not in ["low", "medium", "high"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "InvalidParameter",
+                "message": "risk_level must be one of: low, medium, high",
+                "provided": risk_level
+            }
+        )
+
+    # Validate sort_by
+    if sort_by not in ["upload_date", "risk_score", "filename"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "InvalidParameter",
+                "message": "sort_by must be one of: upload_date, risk_score, filename",
+                "provided": sort_by
+            }
+        )
+
+    # Validate sort_order
+    if sort_order not in ["asc", "desc"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "InvalidParameter",
+                "message": "sort_order must be one of: asc, desc",
+                "provided": sort_order
+            }
+        )
+
+    try:
+        # Calculate skip offset (page is 1-indexed)
+        skip = (page - 1) * page_size
+
+        # Get contracts from graph store
+        contracts_data, total = await graph_store.list_contracts(
+            skip=skip,
+            limit=page_size,
+            risk_level=risk_level,
+            sort_by=sort_by,
+            sort_order=sort_order
+        )
+
+        # Convert to ContractSummary objects
+        contracts = [
+            ContractSummary(
+                contract_id=c['contract_id'],
+                filename=c['filename'],
+                upload_date=datetime.fromisoformat(c['upload_date']) if isinstance(c['upload_date'], str) else c['upload_date'],
+                risk_score=c['risk_score'],
+                risk_level=c['risk_level'],
+                party_count=c['party_count']
+            )
+            for c in contracts_data
+        ]
+
+        # Calculate if there are more pages
+        has_more = (skip + page_size) < total
+
+        response = ContractListResponse(
+            contracts=contracts,
+            total=total,
+            page=page,
+            page_size=page_size,
+            has_more=has_more
+        )
+
+        logger.info(
+            f"Listed {len(contracts)} contracts (total: {total}, page: {page}/{((total - 1) // page_size) + 1 if total > 0 else 0})"
+        )
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing contracts: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "RetrievalError",
+                "message": "Failed to retrieve contracts",
                 "details": str(e)
             }
         )
@@ -476,6 +753,193 @@ async def get_contract_details(
         )
 
 
+@app.delete(
+    "/api/contracts/{contract_id}",
+    status_code=204,
+    tags=["Contracts"]
+)
+async def delete_contract(
+    contract_id: str = Path(..., description="Contract identifier")
+):
+    """
+    Delete a contract and all its associated data.
+
+    This endpoint:
+    1. Verifies the contract exists in the graph store
+    2. Deletes all vector embeddings from ChromaDB
+    3. Deletes the contract graph from FalkorDB
+    4. Returns 204 No Content on success
+
+    Args:
+        contract_id: The contract to delete
+
+    Returns:
+        204 No Content on successful deletion
+
+    Raises:
+        404: Contract not found
+        500: Deletion error
+    """
+    logger.info(f"Deleting contract: {contract_id}")
+
+    try:
+        # Check if contract exists first
+        contract_exists = await graph_store.get_contract_relationships(contract_id)
+        if not contract_exists:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "ContractNotFound",
+                    "message": f"Contract {contract_id} not found"
+                }
+            )
+
+        # Delete from vector store
+        vector_deleted_count = await vector_store.delete_contract(contract_id)
+        logger.info(f"Deleted {vector_deleted_count} vector chunks for contract {contract_id}")
+
+        # Delete from graph store
+        graph_deleted = await graph_store.delete_contract(contract_id)
+        if not graph_deleted:
+            logger.warning(f"Contract {contract_id} not found in graph store during deletion")
+
+        logger.info(f"Successfully deleted contract {contract_id}")
+
+        return Response(status_code=204)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting contract: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "DeletionError",
+                "message": "Failed to delete contract",
+                "details": str(e)
+            }
+        )
+
+
+@app.get(
+    "/api/contracts/search",
+    response_model=GlobalSearchResponse,
+    tags=["Contracts"]
+)
+async def search_contracts(
+    query: str = Query(
+        ...,
+        min_length=3,
+        description="Search query (minimum 3 characters)"
+    ),
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of contracts to return (1-50)"
+    ),
+    risk_level: Optional[str] = Query(
+        None,
+        description="Filter by risk level (low/medium/high)"
+    )
+):
+    """
+    Search across ALL contracts using semantic search.
+
+    This endpoint:
+    1. Performs vector search across all contract embeddings
+    2. Groups results by contract_id
+    3. Enriches results with contract metadata from graph store
+    4. Returns top matching contracts
+
+    Args:
+        query: Natural language search query
+        limit: Maximum number of contracts to return
+        risk_level: Optional filter by risk level
+
+    Returns:
+        GlobalSearchResponse with matching contracts and their details
+
+    Raises:
+        400: Invalid query parameters
+        503: Vector store not initialized
+        500: Search error
+    """
+    logger.info(f"Global search: '{query}' (limit={limit}, risk_level={risk_level})")
+
+    if not vector_store:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "ServiceUnavailable",
+                "message": "Vector store not initialized"
+            }
+        )
+
+    try:
+        # Perform global search
+        search_results = await vector_store.global_search(
+            query=query,
+            n_results=limit * 3,  # Get more results for better grouping
+            risk_level=risk_level
+        )
+
+        # Enrich results with graph data
+        enriched_results = []
+        for result in search_results[:limit]:
+            contract_id = result["contract_id"]
+
+            # Get contract details from graph store
+            contract_graph = await graph_store.get_contract_relationships(contract_id)
+
+            if contract_graph:
+                # Contract exists in graph store
+                enriched_results.append({
+                    "contract_id": contract_id,
+                    "filename": contract_graph.contract.filename,
+                    "upload_date": contract_graph.contract.upload_date.isoformat(),
+                    "risk_score": contract_graph.contract.risk_score,
+                    "risk_level": contract_graph.contract.risk_level,
+                    "matches": result["matches"],
+                    "relevance_score": 1 - result["best_score"]
+                })
+            else:
+                # Contract in vector store but not graph store
+                logger.warning(f"Contract {contract_id} found in vector store but not graph store")
+                enriched_results.append({
+                    "contract_id": contract_id,
+                    "filename": "Unknown",
+                    "upload_date": None,
+                    "risk_score": None,
+                    "risk_level": None,
+                    "matches": result["matches"],
+                    "relevance_score": 1 - result["best_score"]
+                })
+
+        response = GlobalSearchResponse(
+            query=query,
+            results=enriched_results,
+            total=len(enriched_results)
+        )
+
+        logger.info(f"Global search returned {len(enriched_results)} contracts")
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error performing global search: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "SearchError",
+                "message": "Failed to perform global search",
+                "details": str(e)
+            }
+        )
+
+
 @app.get(
     "/api/analytics/costs",
     tags=["Analytics"]
@@ -541,6 +1005,130 @@ async def get_cost_analytics(
             detail={
                 "error": "AnalyticsError",
                 "message": "Failed to retrieve cost analytics",
+                "details": str(e)
+            }
+        )
+
+
+@app.post(
+    "/api/contracts/compare",
+    response_model=ContractComparisonResponse,
+    tags=["Contracts"]
+)
+async def compare_contracts(
+    request: ContractComparisonRequest
+):
+    """
+    Compare two contracts across specified aspects.
+
+    This endpoint:
+    1. Validates both contracts exist in the graph store
+    2. For each aspect, retrieves relevant sections via semantic search
+    3. Uses CONTRACT_REVIEWER legal expertise to analyze differences
+    4. Returns structured comparison with risk implications
+
+    Args:
+        request: Comparison request with contract IDs and aspects to compare
+
+    Returns:
+        ContractComparisonResponse with detailed comparison and cost
+
+    Raises:
+        404: One or both contracts not found
+        503: Required services not initialized
+        500: Comparison processing error
+    """
+    logger.info(
+        f"Comparing contracts {request.contract_id_a} and {request.contract_id_b} "
+        f"on {len(request.aspects)} aspects"
+    )
+
+    if not qa_workflow:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "ServiceUnavailable",
+                "message": "Q&A service not initialized"
+            }
+        )
+
+    try:
+        # Import the comparison service
+        try:
+            from .services.contract_comparison import ContractComparisonService
+        except ImportError:
+            from backend.services.contract_comparison import ContractComparisonService
+
+        # Verify both contracts exist
+        contract_a = await graph_store.get_contract_relationships(request.contract_id_a)
+        contract_b = await graph_store.get_contract_relationships(request.contract_id_b)
+
+        if not contract_a:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "ContractNotFound",
+                    "message": f"Contract {request.contract_id_a} not found"
+                }
+            )
+
+        if not contract_b:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "ContractNotFound",
+                    "message": f"Contract {request.contract_id_b} not found"
+                }
+            )
+
+        # Initialize comparison service
+        vector_store = ContractVectorStore()
+        comparison_service = ContractComparisonService(
+            gemini_router=qa_workflow.gemini_router,
+            vector_store=vector_store,
+            graph_store=graph_store
+        )
+
+        # Perform comparison
+        result = await comparison_service.compare(
+            contract_id_a=request.contract_id_a,
+            contract_id_b=request.contract_id_b,
+            aspects=request.aspects
+        )
+
+        # Track cost
+        if cost_tracker and result.get("total_cost"):
+            logger.info(
+                f"Comparison cost for {request.contract_id_a} vs {request.contract_id_b}: "
+                f"${result['total_cost']:.6f}"
+            )
+
+        logger.info(
+            f"Comparison complete: {len(request.aspects)} aspects analyzed "
+            f"(cost: ${result['total_cost']:.6f})"
+        )
+
+        return ContractComparisonResponse(**result)
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Handle contract not found errors from comparison service
+        logger.error(f"Contract validation error: {e}")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "ContractNotFound",
+                "message": str(e)
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error comparing contracts: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "ComparisonError",
+                "message": "Failed to compare contracts",
                 "details": str(e)
             }
         )

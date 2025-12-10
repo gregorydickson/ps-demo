@@ -16,12 +16,13 @@ import google.generativeai as genai
 # Import services (these will be from Part 1)
 # Note: These imports will work once Part 1 is complete
 try:
-    from ..services.gemini_router import GeminiRouter
+    from ..services.gemini_router import GeminiRouter, LegalExpertise
     from ..services.llamaparse_service import LlamaParseService
 except ImportError:
     # Placeholder for development - will be replaced with actual imports
     GeminiRouter = None
     LlamaParseService = None
+    LegalExpertise = None
 
 from ..services.vector_store import ContractVectorStore
 from ..services.graph_store import ContractGraphStore
@@ -223,20 +224,20 @@ class ContractAnalysisWorkflow:
                 state["errors"].append("GeminiRouter not available - using mock data")
                 logger.warning("Using mock risk analysis")
             else:
-                # Use actual Gemini router
-                response = await self.gemini_router.generate(
+                # Use actual Gemini router with expert legal persona
+                response = await self.gemini_router.generate_with_expertise(
                     prompt=prompt,
-                    model_name="gemini-flash",
-                    response_format="json"
+                    expertise=LegalExpertise.RISK_ANALYST,
+                    additional_context=f"Contract: {state['filename']}"
                 )
 
                 # Parse JSON response
-                analysis = json.loads(response["text"])
+                analysis = json.loads(response.text)
                 state["risk_analysis"] = analysis
                 state["key_terms"] = analysis.get("key_terms", {})
 
                 # Update cost tracking
-                state["total_cost"] = state.get("total_cost", 0.0) + response.get("cost", 0.0)
+                state["total_cost"] = state.get("total_cost", 0.0) + response.cost
 
             logger.info(
                 f"[analyze_risk] Risk score: {state['risk_analysis'].get('risk_score')}, "
@@ -415,16 +416,16 @@ If the information is not available, say so."""
                 state["answer"] = f"Mock answer to: {state['query']}"
                 logger.warning("Using mock answer")
             else:
-                # Use actual Gemini router
-                response = await self.gemini_router.generate(
+                # Use actual Gemini router with Q&A expert persona
+                response = await self.gemini_router.generate_with_expertise(
                     prompt=qa_prompt,
-                    model_name="gemini-flash-lite"
+                    expertise=LegalExpertise.QA_ASSISTANT
                 )
 
-                state["answer"] = response["text"]
+                state["answer"] = response.text
 
                 # Update cost tracking
-                state["total_cost"] = state.get("total_cost", 0.0) + response.get("cost", 0.0)
+                state["total_cost"] = state.get("total_cost", 0.0) + response.cost
 
             logger.info(f"[qa] Generated answer ({len(state.get('answer', ''))} chars)")
 

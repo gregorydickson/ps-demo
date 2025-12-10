@@ -14,11 +14,11 @@ import structlog
 
 try:
     from ..services.vector_store import ContractVectorStore
-    from ..services.gemini_router import GeminiRouter, TaskComplexity
+    from ..services.gemini_router import GeminiRouter, TaskComplexity, LegalExpertise
     from ..services.cost_tracker import CostTracker
 except ImportError:
     from backend.services.vector_store import ContractVectorStore
-    from backend.services.gemini_router import GeminiRouter, TaskComplexity
+    from backend.services.gemini_router import GeminiRouter, TaskComplexity, LegalExpertise
     from backend.services.cost_tracker import CostTracker
 
 logger = structlog.get_logger()
@@ -128,10 +128,9 @@ class QAWorkflow:
 
             logger.info("qa_generate_answer", contract_id=contract_id)
 
-            response = await self.gemini_router.generate(
+            response = await self.gemini_router.generate_with_expertise(
                 prompt=prompt,
-                complexity=TaskComplexity.SIMPLE,  # Use Flash-Lite for Q&A
-                system_instruction="You are a helpful legal assistant. Answer questions based only on the provided contract context. If the answer is not in the context, say so."
+                expertise=LegalExpertise.QA_ASSISTANT
             )
 
             state["answer"] = response.text

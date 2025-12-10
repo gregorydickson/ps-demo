@@ -84,6 +84,54 @@ export interface UploadResponse {
   message: string;
 }
 
+export interface ContractSummary {
+  contract_id: string;
+  filename: string;
+  upload_date: string;
+  risk_score: number | null;
+  risk_level: string | null;
+  party_count: number;
+}
+
+export interface ContractListResponse {
+  contracts: ContractSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
+export interface SearchResult {
+  contract_id: string;
+  filename: string;
+  risk_level: string | null;
+  matches: Array<{ text: string; score: number }>;
+  relevance_score: number;
+}
+
+export interface ComparisonRequest {
+  contract_id_a: string;
+  contract_id_b: string;
+  aspects?: string[];
+}
+
+export interface BatchUploadResult {
+  filename: string;
+  contract_id: string | null;
+  status: string;
+  error: string | null;
+  risk_level: string | null;
+}
+
+export interface BatchUploadResponse {
+  total: number;
+  successful: number;
+  failed: number;
+  results: BatchUploadResult[];
+  total_cost: number;
+  processing_time_ms: number;
+}
+
 // API functions
 export async function uploadContract(
   file: File,
@@ -140,6 +188,67 @@ export async function getCostAnalytics(date?: string): Promise<CostAnalytics> {
   const response = await apiClient.get<CostAnalytics>('/api/analytics/costs', {
     params,
   });
+
+  return response.data;
+}
+
+export async function listContracts(params: {
+  page?: number;
+  page_size?: number;
+  risk_level?: string;
+  sort_by?: string;
+  sort_order?: string;
+}): Promise<ContractListResponse> {
+  const response = await apiClient.get<ContractListResponse>(
+    '/api/contracts',
+    { params }
+  );
+
+  return response.data;
+}
+
+export async function deleteContract(contractId: string): Promise<void> {
+  await apiClient.delete(`/api/contracts/${contractId}`);
+}
+
+export async function searchContracts(
+  query: string,
+  limit?: number
+): Promise<{ results: SearchResult[] }> {
+  const params: { query: string; limit?: number } = { query };
+  if (limit) params.limit = limit;
+
+  const response = await apiClient.get<{ results: SearchResult[] }>(
+    '/api/contracts/search',
+    { params }
+  );
+
+  return response.data;
+}
+
+export async function compareContracts(
+  request: ComparisonRequest
+): Promise<any> {
+  const response = await apiClient.post('/api/contracts/compare', request);
+
+  return response.data;
+}
+
+export async function batchUpload(
+  files: File[]
+): Promise<BatchUploadResponse> {
+  const formData = new FormData();
+  files.forEach(file => formData.append('files', file));
+
+  const response = await apiClient.post<BatchUploadResponse>(
+    '/api/contracts/batch-upload',
+    formData,
+    {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    }
+  );
 
   return response.data;
 }
