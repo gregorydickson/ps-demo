@@ -529,6 +529,125 @@ async def query_contract(
 
 
 @app.get(
+    "/api/contracts/search",
+    response_model=GlobalSearchResponse,
+    tags=["Contracts"]
+)
+async def search_contracts(
+    query: str = Query(
+        ...,
+        min_length=3,
+        description="Search query (minimum 3 characters)"
+    ),
+    limit: int = Query(
+        default=10,
+        ge=1,
+        le=50,
+        description="Maximum number of contracts to return (1-50)"
+    ),
+    risk_level: Optional[str] = Query(
+        None,
+        description="Filter by risk level (low/medium/high)"
+    )
+):
+    """
+    Search across ALL contracts using semantic search.
+
+    This endpoint:
+    1. Performs vector search across all contract embeddings
+    2. Groups results by contract_id
+    3. Enriches results with contract metadata from graph store
+    4. Returns top matching contracts
+
+    Args:
+        query: Natural language search query
+        limit: Maximum number of contracts to return
+        risk_level: Optional filter by risk level
+
+    Returns:
+        GlobalSearchResponse with matching contracts and their details
+
+    Raises:
+        400: Invalid query parameters
+        503: Vector store not initialized
+        500: Search error
+    """
+    logger.info(f"Global search: '{query}' (limit={limit}, risk_level={risk_level})")
+
+    if not vector_store:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "ServiceUnavailable",
+                "message": "Vector store not initialized"
+            }
+        )
+
+    try:
+        # Perform global search
+        search_results = await vector_store.global_search(
+            query=query,
+            n_results=limit * 3,  # Get more results for better grouping
+            risk_level=risk_level
+        )
+
+        # Enrich results with graph data
+        enriched_results = []
+        for result in search_results[:limit]:
+            contract_id = result["contract_id"]
+
+            # Get contract details from graph store
+            contract_graph = await graph_store.get_contract_relationships(contract_id)
+
+            if contract_graph:
+                # Contract exists in graph store
+                enriched_results.append({
+                    "contract_id": contract_id,
+                    "filename": contract_graph.contract.filename,
+                    "upload_date": contract_graph.contract.upload_date.isoformat(),
+                    "risk_score": contract_graph.contract.risk_score,
+                    "risk_level": contract_graph.contract.risk_level,
+                    "matches": result["matches"],
+                    "relevance_score": 1 - result["best_score"]
+                })
+            else:
+                # Contract in vector store but not graph store
+                logger.warning(f"Contract {contract_id} found in vector store but not graph store")
+                enriched_results.append({
+                    "contract_id": contract_id,
+                    "filename": "Unknown",
+                    "upload_date": None,
+                    "risk_score": None,
+                    "risk_level": None,
+                    "matches": result["matches"],
+                    "relevance_score": 1 - result["best_score"]
+                })
+
+        response = GlobalSearchResponse(
+            query=query,
+            results=enriched_results,
+            total=len(enriched_results)
+        )
+
+        logger.info(f"Global search returned {len(enriched_results)} contracts")
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error performing global search: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "SearchError",
+                "message": "Failed to perform global search",
+                "details": str(e)
+            }
+        )
+
+
+@app.get(
     "/api/contracts",
     response_model=ContractListResponse,
     tags=["Contracts"]
@@ -822,125 +941,6 @@ async def delete_contract(
 
 
 @app.get(
-    "/api/contracts/search",
-    response_model=GlobalSearchResponse,
-    tags=["Contracts"]
-)
-async def search_contracts(
-    query: str = Query(
-        ...,
-        min_length=3,
-        description="Search query (minimum 3 characters)"
-    ),
-    limit: int = Query(
-        default=10,
-        ge=1,
-        le=50,
-        description="Maximum number of contracts to return (1-50)"
-    ),
-    risk_level: Optional[str] = Query(
-        None,
-        description="Filter by risk level (low/medium/high)"
-    )
-):
-    """
-    Search across ALL contracts using semantic search.
-
-    This endpoint:
-    1. Performs vector search across all contract embeddings
-    2. Groups results by contract_id
-    3. Enriches results with contract metadata from graph store
-    4. Returns top matching contracts
-
-    Args:
-        query: Natural language search query
-        limit: Maximum number of contracts to return
-        risk_level: Optional filter by risk level
-
-    Returns:
-        GlobalSearchResponse with matching contracts and their details
-
-    Raises:
-        400: Invalid query parameters
-        503: Vector store not initialized
-        500: Search error
-    """
-    logger.info(f"Global search: '{query}' (limit={limit}, risk_level={risk_level})")
-
-    if not vector_store:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "ServiceUnavailable",
-                "message": "Vector store not initialized"
-            }
-        )
-
-    try:
-        # Perform global search
-        search_results = await vector_store.global_search(
-            query=query,
-            n_results=limit * 3,  # Get more results for better grouping
-            risk_level=risk_level
-        )
-
-        # Enrich results with graph data
-        enriched_results = []
-        for result in search_results[:limit]:
-            contract_id = result["contract_id"]
-
-            # Get contract details from graph store
-            contract_graph = await graph_store.get_contract_relationships(contract_id)
-
-            if contract_graph:
-                # Contract exists in graph store
-                enriched_results.append({
-                    "contract_id": contract_id,
-                    "filename": contract_graph.contract.filename,
-                    "upload_date": contract_graph.contract.upload_date.isoformat(),
-                    "risk_score": contract_graph.contract.risk_score,
-                    "risk_level": contract_graph.contract.risk_level,
-                    "matches": result["matches"],
-                    "relevance_score": 1 - result["best_score"]
-                })
-            else:
-                # Contract in vector store but not graph store
-                logger.warning(f"Contract {contract_id} found in vector store but not graph store")
-                enriched_results.append({
-                    "contract_id": contract_id,
-                    "filename": "Unknown",
-                    "upload_date": None,
-                    "risk_score": None,
-                    "risk_level": None,
-                    "matches": result["matches"],
-                    "relevance_score": 1 - result["best_score"]
-                })
-
-        response = GlobalSearchResponse(
-            query=query,
-            results=enriched_results,
-            total=len(enriched_results)
-        )
-
-        logger.info(f"Global search returned {len(enriched_results)} contracts")
-
-        return response
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error performing global search: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "SearchError",
-                "message": "Failed to perform global search",
-                "details": str(e)
-            }
-        )
-
-
-@app.get(
     "/api/analytics/costs",
     tags=["Analytics"]
 )
@@ -1081,8 +1081,17 @@ async def compare_contracts(
                 }
             )
 
-        # Initialize comparison service
-        vector_store = ContractVectorStore()
+        # Check vector store is initialized
+        if not vector_store:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "ServiceUnavailable",
+                    "message": "Vector store not initialized"
+                }
+            )
+
+        # Initialize comparison service using global vector_store
         comparison_service = ContractComparisonService(
             gemini_router=qa_workflow.gemini_router,
             vector_store=vector_store,
