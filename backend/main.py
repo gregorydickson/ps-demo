@@ -13,10 +13,10 @@ import logging
 import time
 import uuid
 import asyncio
-from datetime import datetime
-from typing import Optional, List
+from datetime import datetime, timezone
+from typing import Optional, List, Literal
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Path, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -27,9 +27,20 @@ try:
     from .services.cost_tracker import CostTracker
     from .services.graph_store import ContractGraphStore
     from .services.vector_store import ContractVectorStore
-    from .workflows.contract_analysis_workflow import get_workflow
+    from .workflows.contract_analysis_workflow import get_workflow as get_analysis_workflow
     from .workflows.qa_workflow import QAWorkflow
     from .utils.request_context import set_request_id, clear_request_context
+    from .utils.decorators import handle_endpoint_errors
+    from .utils.dependencies import (
+        set_vector_store, set_graph_store, set_qa_workflow,
+        set_cost_tracker, set_workflow,
+        get_vector_store, get_graph_store, get_qa_workflow,
+        get_cost_tracker, get_workflow
+    )
+    from .utils.functional import (
+        utc_now, format_timestamp, enrich_results_parallel,
+        build_contract_summaries
+    )
     from .models.schemas import (
         ContractAnalysisResponse,
         ContractQueryRequest,
@@ -50,9 +61,20 @@ except ImportError:
     from backend.services.cost_tracker import CostTracker
     from backend.services.graph_store import ContractGraphStore
     from backend.services.vector_store import ContractVectorStore
-    from backend.workflows.contract_analysis_workflow import get_workflow
+    from backend.workflows.contract_analysis_workflow import get_workflow as get_analysis_workflow
     from backend.workflows.qa_workflow import QAWorkflow
     from backend.utils.request_context import set_request_id, clear_request_context
+    from backend.utils.decorators import handle_endpoint_errors
+    from backend.utils.dependencies import (
+        set_vector_store, set_graph_store, set_qa_workflow,
+        set_cost_tracker, set_workflow,
+        get_vector_store, get_graph_store, get_qa_workflow,
+        get_cost_tracker, get_workflow
+    )
+    from backend.utils.functional import (
+        utc_now, format_timestamp, enrich_results_parallel,
+        build_contract_summaries
+    )
     from backend.models.schemas import (
         ContractAnalysisResponse,
         ContractQueryRequest,
@@ -118,20 +140,18 @@ app.add_middleware(
 # Add Request Context middleware
 app.add_middleware(RequestContextMiddleware)
 
-# Global service instances
-cost_tracker: Optional[CostTracker] = None
-graph_store: Optional[ContractGraphStore] = None
-vector_store: Optional[ContractVectorStore] = None
-workflow = None
-qa_workflow: Optional[QAWorkflow] = None
+# Local service references for shutdown
+_local_graph_store: Optional[ContractGraphStore] = None
 
 
 @app.on_event("startup")
 async def startup_event():
     """
     Initialize services on application startup.
+
+    Uses dependency injection to make services available via Depends().
     """
-    global cost_tracker, graph_store, vector_store, workflow, qa_workflow
+    global _local_graph_store
 
     logger.info("Starting Contract Intelligence API...")
 
@@ -139,22 +159,28 @@ async def startup_event():
         # Initialize CostTracker
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         cost_tracker = CostTracker(redis_url=redis_url)
+        set_cost_tracker(cost_tracker)
         logger.info(f"CostTracker initialized with Redis at {redis_url}")
 
         # Initialize ContractGraphStore
         graph_store = ContractGraphStore()
-        logger.info("ContractGraphStore initialized with Neo4j")
+        set_graph_store(graph_store)
+        _local_graph_store = graph_store
+        logger.info("ContractGraphStore initialized with FalkorDB")
 
         # Initialize ContractVectorStore
         vector_store = ContractVectorStore()
+        set_vector_store(vector_store)
         logger.info("ContractVectorStore initialized with ChromaDB")
 
         # Initialize workflow
-        workflow = get_workflow(initialize_stores=True)
+        workflow = get_analysis_workflow(initialize_stores=True)
+        set_workflow(workflow)
         logger.info("Contract analysis workflow initialized")
 
         # Initialize QA workflow
         qa_workflow = QAWorkflow(cost_tracker=cost_tracker)
+        set_qa_workflow(qa_workflow)
         logger.info("QA workflow initialized")
 
         logger.info("All services initialized successfully")
@@ -171,9 +197,9 @@ async def shutdown_event():
     """
     logger.info("Shutting down Contract Intelligence API...")
 
-    if graph_store:
-        graph_store.close()
-        logger.info("Neo4j connection closed")
+    if _local_graph_store:
+        _local_graph_store.close()
+        logger.info("FalkorDB connection closed")
 
     logger.info("Shutdown complete")
 
@@ -187,7 +213,7 @@ async def root():
         "status": "healthy",
         "service": "Contract Intelligence API",
         "version": "1.0.0",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": format_timestamp()
     }
 
 
@@ -196,16 +222,30 @@ async def health_check():
     """
     Detailed health check including service status.
     """
+    cost_tracker = get_cost_tracker()
+    graph_store_available = True
+    workflow_available = True
+
+    try:
+        get_graph_store()
+    except HTTPException:
+        graph_store_available = False
+
+    try:
+        get_workflow()
+    except HTTPException:
+        workflow_available = False
+
     redis_healthy = cost_tracker.health_check() if cost_tracker else False
 
     return {
         "status": "healthy" if redis_healthy else "degraded",
         "services": {
             "redis": "up" if redis_healthy else "down",
-            "neo4j": "up" if graph_store else "down",
-            "workflow": "up" if workflow else "down"
+            "falkordb": "up" if graph_store_available else "down",
+            "workflow": "up" if workflow_available else "down"
         },
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": format_timestamp()
     }
 
 
@@ -533,6 +573,7 @@ async def query_contract(
     response_model=GlobalSearchResponse,
     tags=["Contracts"]
 )
+@handle_endpoint_errors("SearchError")
 async def search_contracts(
     query: str = Query(
         ...,
@@ -545,10 +586,12 @@ async def search_contracts(
         le=50,
         description="Maximum number of contracts to return (1-50)"
     ),
-    risk_level: Optional[str] = Query(
+    risk_level: Optional[Literal["low", "medium", "high"]] = Query(
         None,
-        description="Filter by risk level (low/medium/high)"
-    )
+        description="Filter by risk level"
+    ),
+    vector_store=Depends(get_vector_store),
+    graph_store=Depends(get_graph_store)
 ):
     """
     Search across ALL contracts using semantic search.
@@ -556,95 +599,48 @@ async def search_contracts(
     This endpoint:
     1. Performs vector search across all contract embeddings
     2. Groups results by contract_id
-    3. Enriches results with contract metadata from graph store
+    3. Enriches results with contract metadata from graph store (in parallel)
     4. Returns top matching contracts
 
     Args:
         query: Natural language search query
         limit: Maximum number of contracts to return
         risk_level: Optional filter by risk level
+        vector_store: Injected vector store dependency
+        graph_store: Injected graph store dependency
 
     Returns:
         GlobalSearchResponse with matching contracts and their details
 
     Raises:
-        400: Invalid query parameters
-        503: Vector store not initialized
+        422: Invalid query parameters (via Literal type validation)
+        503: Store not initialized
         500: Search error
     """
     logger.info(f"Global search: '{query}' (limit={limit}, risk_level={risk_level})")
 
-    if not vector_store:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "ServiceUnavailable",
-                "message": "Vector store not initialized"
-            }
-        )
+    # Perform global search
+    search_results = await vector_store.global_search(
+        query=query,
+        n_results=limit * 3,  # Get more results for better grouping
+        risk_level=risk_level
+    )
 
-    try:
-        # Perform global search
-        search_results = await vector_store.global_search(
-            query=query,
-            n_results=limit * 3,  # Get more results for better grouping
-            risk_level=risk_level
-        )
+    # Enrich results with graph data using parallel async operations
+    enriched_results = await enrich_results_parallel(
+        search_results[:limit],
+        graph_store
+    )
 
-        # Enrich results with graph data
-        enriched_results = []
-        for result in search_results[:limit]:
-            contract_id = result["contract_id"]
+    response = GlobalSearchResponse(
+        query=query,
+        results=enriched_results,
+        total=len(enriched_results)
+    )
 
-            # Get contract details from graph store
-            contract_graph = await graph_store.get_contract_relationships(contract_id)
+    logger.info(f"Global search returned {len(enriched_results)} contracts")
 
-            if contract_graph:
-                # Contract exists in graph store
-                enriched_results.append({
-                    "contract_id": contract_id,
-                    "filename": contract_graph.contract.filename,
-                    "upload_date": contract_graph.contract.upload_date.isoformat(),
-                    "risk_score": contract_graph.contract.risk_score,
-                    "risk_level": contract_graph.contract.risk_level,
-                    "matches": result["matches"],
-                    "relevance_score": 1 - result["best_score"]
-                })
-            else:
-                # Contract in vector store but not graph store
-                logger.warning(f"Contract {contract_id} found in vector store but not graph store")
-                enriched_results.append({
-                    "contract_id": contract_id,
-                    "filename": "Unknown",
-                    "upload_date": None,
-                    "risk_score": None,
-                    "risk_level": None,
-                    "matches": result["matches"],
-                    "relevance_score": 1 - result["best_score"]
-                })
-
-        response = GlobalSearchResponse(
-            query=query,
-            results=enriched_results,
-            total=len(enriched_results)
-        )
-
-        logger.info(f"Global search returned {len(enriched_results)} contracts")
-
-        return response
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error performing global search: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "SearchError",
-                "message": "Failed to perform global search",
-                "details": str(e)
-            }
-        )
+    return response
 
 
 @app.get(
@@ -652,12 +648,20 @@ async def search_contracts(
     response_model=ContractListResponse,
     tags=["Contracts"]
 )
+@handle_endpoint_errors("RetrievalError")
 async def list_contracts(
     page: int = Query(1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(20, ge=1, le=100, description="Number of items per page (max 100)"),
-    risk_level: Optional[str] = Query(None, description="Filter by risk level (low/medium/high)"),
-    sort_by: str = Query("upload_date", description="Sort by field (upload_date, risk_score, filename)"),
-    sort_order: str = Query("desc", description="Sort order (asc/desc)")
+    risk_level: Optional[Literal["low", "medium", "high"]] = Query(
+        None, description="Filter by risk level"
+    ),
+    sort_by: Literal["upload_date", "risk_score", "filename"] = Query(
+        "upload_date", description="Sort by field"
+    ),
+    sort_order: Literal["asc", "desc"] = Query(
+        "desc", description="Sort order"
+    ),
+    graph_store=Depends(get_graph_store)
 ):
     """
     List all contracts with pagination, filtering, and sorting.
@@ -674,12 +678,14 @@ async def list_contracts(
         risk_level: Optional filter by risk level
         sort_by: Field to sort by
         sort_order: Sort direction (asc/desc)
+        graph_store: Injected graph store dependency
 
     Returns:
         ContractListResponse with paginated contract summaries
 
     Raises:
-        400: Invalid query parameters
+        422: Invalid query parameters (via Literal type validation)
+        503: Graph store not available
         500: Retrieval error
     """
     logger.info(
@@ -687,94 +693,47 @@ async def list_contracts(
         f"risk_level={risk_level}, sort_by={sort_by}, sort_order={sort_order}"
     )
 
-    # Validate risk_level if provided
-    if risk_level and risk_level not in ["low", "medium", "high"]:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "InvalidParameter",
-                "message": "risk_level must be one of: low, medium, high",
-                "provided": risk_level
-            }
+    # Calculate skip offset (page is 1-indexed)
+    skip = (page - 1) * page_size
+
+    # Get contracts from graph store
+    contracts_data, total = await graph_store.list_contracts(
+        skip=skip,
+        limit=page_size,
+        risk_level=risk_level,
+        sort_by=sort_by,
+        sort_order=sort_order
+    )
+
+    # Convert to ContractSummary objects using list comprehension
+    contracts = [
+        ContractSummary(
+            contract_id=c['contract_id'],
+            filename=c['filename'],
+            upload_date=datetime.fromisoformat(c['upload_date']) if isinstance(c['upload_date'], str) else c['upload_date'],
+            risk_score=c['risk_score'],
+            risk_level=c['risk_level'],
+            party_count=c['party_count']
         )
+        for c in contracts_data
+    ]
 
-    # Validate sort_by
-    if sort_by not in ["upload_date", "risk_score", "filename"]:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "InvalidParameter",
-                "message": "sort_by must be one of: upload_date, risk_score, filename",
-                "provided": sort_by
-            }
-        )
+    # Calculate if there are more pages
+    has_more = (skip + page_size) < total
 
-    # Validate sort_order
-    if sort_order not in ["asc", "desc"]:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "InvalidParameter",
-                "message": "sort_order must be one of: asc, desc",
-                "provided": sort_order
-            }
-        )
+    response = ContractListResponse(
+        contracts=contracts,
+        total=total,
+        page=page,
+        page_size=page_size,
+        has_more=has_more
+    )
 
-    try:
-        # Calculate skip offset (page is 1-indexed)
-        skip = (page - 1) * page_size
+    logger.info(
+        f"Listed {len(contracts)} contracts (total: {total}, page: {page}/{((total - 1) // page_size) + 1 if total > 0 else 0})"
+    )
 
-        # Get contracts from graph store
-        contracts_data, total = await graph_store.list_contracts(
-            skip=skip,
-            limit=page_size,
-            risk_level=risk_level,
-            sort_by=sort_by,
-            sort_order=sort_order
-        )
-
-        # Convert to ContractSummary objects
-        contracts = [
-            ContractSummary(
-                contract_id=c['contract_id'],
-                filename=c['filename'],
-                upload_date=datetime.fromisoformat(c['upload_date']) if isinstance(c['upload_date'], str) else c['upload_date'],
-                risk_score=c['risk_score'],
-                risk_level=c['risk_level'],
-                party_count=c['party_count']
-            )
-            for c in contracts_data
-        ]
-
-        # Calculate if there are more pages
-        has_more = (skip + page_size) < total
-
-        response = ContractListResponse(
-            contracts=contracts,
-            total=total,
-            page=page,
-            page_size=page_size,
-            has_more=has_more
-        )
-
-        logger.info(
-            f"Listed {len(contracts)} contracts (total: {total}, page: {page}/{((total - 1) // page_size) + 1 if total > 0 else 0})"
-        )
-
-        return response
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing contracts: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "RetrievalError",
-                "message": "Failed to retrieve contracts",
-                "details": str(e)
-            }
-        )
+    return response
 
 
 @app.get(
@@ -877,8 +836,11 @@ async def get_contract_details(
     status_code=204,
     tags=["Contracts"]
 )
+@handle_endpoint_errors("DeletionError")
 async def delete_contract(
-    contract_id: str = Path(..., description="Contract identifier")
+    contract_id: str = Path(..., description="Contract identifier"),
+    graph_store=Depends(get_graph_store),
+    vector_store=Depends(get_vector_store)
 ):
     """
     Delete a contract and all its associated data.
@@ -891,53 +853,42 @@ async def delete_contract(
 
     Args:
         contract_id: The contract to delete
+        graph_store: Injected graph store dependency
+        vector_store: Injected vector store dependency
 
     Returns:
         204 No Content on successful deletion
 
     Raises:
         404: Contract not found
+        503: Store not available
         500: Deletion error
     """
     logger.info(f"Deleting contract: {contract_id}")
 
-    try:
-        # Check if contract exists first
-        contract_exists = await graph_store.get_contract_relationships(contract_id)
-        if not contract_exists:
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "error": "ContractNotFound",
-                    "message": f"Contract {contract_id} not found"
-                }
-            )
-
-        # Delete from vector store
-        vector_deleted_count = await vector_store.delete_contract(contract_id)
-        logger.info(f"Deleted {vector_deleted_count} vector chunks for contract {contract_id}")
-
-        # Delete from graph store
-        graph_deleted = await graph_store.delete_contract(contract_id)
-        if not graph_deleted:
-            logger.warning(f"Contract {contract_id} not found in graph store during deletion")
-
-        logger.info(f"Successfully deleted contract {contract_id}")
-
-        return Response(status_code=204)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting contract: {e}", exc_info=True)
+    # Check if contract exists first
+    contract_exists = await graph_store.get_contract_relationships(contract_id)
+    if not contract_exists:
         raise HTTPException(
-            status_code=500,
+            status_code=404,
             detail={
-                "error": "DeletionError",
-                "message": "Failed to delete contract",
-                "details": str(e)
+                "error": "ContractNotFound",
+                "message": f"Contract {contract_id} not found"
             }
         )
+
+    # Delete from vector store
+    vector_deleted_count = await vector_store.delete_contract(contract_id)
+    logger.info(f"Deleted {vector_deleted_count} vector chunks for contract {contract_id}")
+
+    # Delete from graph store
+    graph_deleted = await graph_store.delete_contract(contract_id)
+    if not graph_deleted:
+        logger.warning(f"Contract {contract_id} not found in graph store during deletion")
+
+    logger.info(f"Successfully deleted contract {contract_id}")
+
+    return Response(status_code=204)
 
 
 @app.get(
@@ -1157,7 +1108,7 @@ async def global_exception_handler(request, exc):
             "error": "InternalServerError",
             "message": "An unexpected error occurred",
             "details": str(exc),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": format_timestamp()
         }
     )
 
