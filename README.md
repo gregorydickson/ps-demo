@@ -265,33 +265,33 @@ Experience the platform with our colorful integration test runner featuring ASCI
 ```bash
 cd backend
 
-# 🐳 Make sure FalkorDB is running
+# 🐳 Make sure FalkorDB is running (from project root)
 docker-compose up -d
 
 # 📄 Import sample contracts into the database
-python scripts/import_test_documents.py --import
+FALKORDB_PORT=6379 python scripts/import_test_documents.py --import
 
 # 📋 List imported contracts
-python scripts/import_test_documents.py --list
+FALKORDB_PORT=6379 python scripts/import_test_documents.py --list
 
 # 💬 Query a contract
-python scripts/import_test_documents.py --query "What are the payment terms?"
+FALKORDB_PORT=6379 python scripts/import_test_documents.py --query "What are the payment terms?"
 ```
 
 ### Step 2: Run the Visual Integration Tests
 
 ```bash
 # 🎨 Run the colorful integration test suite
-python scripts/run_integration_tests.py
+python scripts/run_integration_tests.py --port 6379
 
 # 🎬 Demo mode - preview what tests cover (no actual tests)
 python scripts/run_integration_tests.py --demo
 
 # 📊 Show live contract data with beautiful formatting
-python scripts/run_integration_tests.py --show-data
+python scripts/run_integration_tests.py --port 6379 --show-data
 
 # 🔍 Verbose output
-python scripts/run_integration_tests.py -v
+python scripts/run_integration_tests.py --port 6379 -v
 ```
 
 ### What You'll See
