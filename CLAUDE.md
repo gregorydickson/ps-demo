@@ -17,9 +17,11 @@ AI-powered legal contract analysis platform for ProfitSolv. Analyzes legal contr
 
 3. **Tidy First**: Separate structural changes from behavioral changes. Never mix them in the same commit.
 
-4. **Async Everything**: All I/O operations must be async. Use `asyncio.to_thread()` for blocking calls to external APIs (Gemini, LlamaParse).
+4. **FalkorDB for Graph**: The project uses FalkorDB (Redis-based graph DB). Port 6379 for graph, port 6380 for Redis cost tracking.
 
-5. **Mock External APIs in Tests**: Never make real API calls in tests. Use pytest fixtures from `backend/tests/conftest.py`.
+5. **Async Everything**: All I/O operations must be async. Use `asyncio.to_thread()` for blocking calls to external APIs (Gemini, LlamaParse).
+
+6. **Mock External APIs in Tests**: Never make real API calls in tests. Use pytest fixtures from `backend/tests/conftest.py`.
 
 ---
 
@@ -254,10 +256,10 @@ All requests automatically get X-Request-ID header. Use `get_request_id()` from 
 
 ## Known Issues / Technical Debt
 
-
-**datetime.utcnow()**: Deprecated, should use `datetime.now(timezone.utc)`
-**Frontend Test Dependencies**: Run `npm install` in frontend before running tests
-**No Authentication**: POC has no auth - add before production use
+1. **Pydantic Deprecation**: Some v1 syntax used, should migrate to v2 syntax
+2. **datetime.utcnow()**: Deprecated, should use `datetime.now(timezone.utc)`
+3. **Frontend Test Dependencies**: Run `npm install` in frontend before running tests
+4. **No Authentication**: POC has no auth - add before production use
 
 ---
 
@@ -288,7 +290,7 @@ npm test -- --coverage                  # Frontend coverage
 
 ---
 
-## Resources
+## Contact / Resources
 
 - **Workplans:** `docs/1-workplan.md` and `docs/2-workplan-part*.md`
 - **Deployment Guide:** `DEPLOYMENT.md`

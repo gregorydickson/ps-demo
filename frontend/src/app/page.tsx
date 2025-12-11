@@ -89,7 +89,7 @@ export default function Home() {
           <div className="text-center text-sm text-muted-foreground">
             <p>
               Powered by Google Gemini, LlamaParse, LangGraph, ChromaDB, and
-              Neo4j
+              FalkorDB
             </p>
           </div>
         </div>

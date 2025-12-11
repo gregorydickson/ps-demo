@@ -1,5 +1,5 @@
 """
-Graph schemas for Neo4j contract storage.
+Graph schemas for FalkorDB contract storage.
 
 Defines node and relationship schemas for representing legal contracts
 in a graph database structure.

@@ -334,7 +334,7 @@ class ContractQueryResponse(BaseModel):
 
 
 class ContractDetailsResponse(BaseModel):
-    """Full contract details from Neo4j graph."""
+    """Full contract details from FalkorDB graph."""
     contract_id: str = Field(..., description="Contract identifier")
     filename: str = Field(..., description="Original filename")
     upload_date: datetime = Field(..., description="When contract was uploaded")

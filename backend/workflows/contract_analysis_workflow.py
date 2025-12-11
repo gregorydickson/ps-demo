@@ -86,7 +86,7 @@ class ContractAnalysisWorkflow:
     1. parse_document - Extract text using LlamaParse
     2. analyze_risk - Analyze risks using Gemini Flash
     3. store_vectors - Store in ChromaDB
-    4. store_graph - Store in Neo4j
+    4. store_graph - Store in FalkorDB
     5. qa - Answer questions using semantic search
     """
 
@@ -307,7 +307,7 @@ class ContractAnalysisWorkflow:
         state: ContractAnalysisState
     ) -> ContractAnalysisState:
         """
-        Node 4: Store contract graph in Neo4j.
+        Node 4: Store contract graph in FalkorDB.
 
         Args:
             state: Current workflow state
