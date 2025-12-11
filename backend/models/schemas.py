@@ -446,3 +446,46 @@ class ContractComparisonResponse(BaseModel):
         ...,
         description="Total API cost for comparison in USD"
     )
+
+
+# Graph RAG schemas
+
+class GraphRAGQueryRequest(BaseModel):
+    """Request for Graph RAG query."""
+    query: str = Field(
+        ...,
+        min_length=3,
+        max_length=1000,
+        description="Question to answer using hybrid retrieval"
+    )
+    contract_id: Optional[str] = Field(
+        None,
+        description="Specific contract (None = search all contracts)"
+    )
+    n_results: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        description="Number of context items to retrieve"
+    )
+
+
+class GraphRAGSource(BaseModel):
+    """Source attribution for Graph RAG response."""
+    index: int = Field(..., description="Source number for citation")
+    type: str = Field(..., description="Source type: 'semantic' or 'graph'")
+    contract_id: str = Field(..., description="Contract this source came from")
+    score: float = Field(..., description="RRF relevance score")
+    preview: str = Field(..., description="Content preview (first 100 chars)")
+
+
+class GraphRAGQueryResponse(BaseModel):
+    """Response from Graph RAG query."""
+    answer: str = Field(..., description="Generated answer to the question")
+    sources: List[GraphRAGSource] = Field(
+        default_factory=list,
+        description="Source attribution with citations"
+    )
+    semantic_results: int = Field(..., description="Number of semantic search results")
+    graph_results: int = Field(..., description="Number of graph context results")
+    cost: float = Field(..., description="Cost of this query in USD")

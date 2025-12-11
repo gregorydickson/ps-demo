@@ -320,3 +320,12 @@ def sample_graph_risk_factors():
             recommendation="Consider negotiating higher cap"
         ),
     ]
+
+
+@pytest.fixture
+def test_client():
+    """FastAPI TestClient for integration tests."""
+    from fastapi.testclient import TestClient
+    from backend.main import app
+
+    return TestClient(app)

@@ -28,6 +28,7 @@ try:
     from .services.vector_store import ContractVectorStore
     from .workflows.contract_analysis_workflow import get_workflow
     from .workflows.qa_workflow import QAWorkflow
+    from .workflows.graph_rag_workflow import GraphRAGWorkflow
     from .utils.request_context import set_request_id, clear_request_context
     from .models.schemas import (
         ContractAnalysisResponse,
@@ -35,7 +36,9 @@ try:
         ContractQueryResponse,
         ContractDetailsResponse,
         CostAnalytics,
-        ErrorResponse
+        ErrorResponse,
+        GraphRAGQueryRequest,
+        GraphRAGQueryResponse
     )
 except ImportError:
     # Fall back to absolute imports (when run directly)
@@ -44,6 +47,7 @@ except ImportError:
     from backend.services.vector_store import ContractVectorStore
     from backend.workflows.contract_analysis_workflow import get_workflow
     from backend.workflows.qa_workflow import QAWorkflow
+    from backend.workflows.graph_rag_workflow import GraphRAGWorkflow
     from backend.utils.request_context import set_request_id, clear_request_context
     from backend.models.schemas import (
         ContractAnalysisResponse,
@@ -51,7 +55,9 @@ except ImportError:
         ContractQueryResponse,
         ContractDetailsResponse,
         CostAnalytics,
-        ErrorResponse
+        ErrorResponse,
+        GraphRAGQueryRequest,
+        GraphRAGQueryResponse
     )
 
 # Configure logging
@@ -106,8 +112,10 @@ app.add_middleware(RequestContextMiddleware)
 # Global service instances
 cost_tracker: Optional[CostTracker] = None
 graph_store: Optional[ContractGraphStore] = None
+vector_store: Optional[ContractVectorStore] = None
 workflow = None
 qa_workflow: Optional[QAWorkflow] = None
+graph_rag_workflow: Optional[GraphRAGWorkflow] = None
 
 
 @app.on_event("startup")
@@ -115,7 +123,7 @@ async def startup_event():
     """
     Initialize services on application startup.
     """
-    global cost_tracker, graph_store, workflow, qa_workflow
+    global cost_tracker, graph_store, vector_store, workflow, qa_workflow, graph_rag_workflow
 
     logger.info("Starting Contract Intelligence API...")
 
@@ -129,6 +137,10 @@ async def startup_event():
         graph_store = ContractGraphStore()
         logger.info("ContractGraphStore initialized with FalkorDB")
 
+        # Initialize ContractVectorStore
+        vector_store = ContractVectorStore()
+        logger.info("ContractVectorStore initialized with ChromaDB")
+
         # Initialize workflow
         workflow = get_workflow(initialize_stores=True)
         logger.info("Contract analysis workflow initialized")
@@ -136,6 +148,14 @@ async def startup_event():
         # Initialize QA workflow
         qa_workflow = QAWorkflow(cost_tracker=cost_tracker)
         logger.info("QA workflow initialized")
+
+        # Initialize Graph RAG workflow
+        graph_rag_workflow = GraphRAGWorkflow(
+            vector_store=vector_store,
+            graph_store=graph_store,
+            cost_tracker=cost_tracker
+        )
+        logger.info("Graph RAG workflow initialized")
 
         logger.info("All services initialized successfully")
 
@@ -541,6 +561,101 @@ async def get_cost_analytics(
             detail={
                 "error": "AnalyticsError",
                 "message": "Failed to retrieve cost analytics",
+                "details": str(e)
+            }
+        )
+
+
+@app.post(
+    "/api/contracts/graph-query",
+    response_model=GraphRAGQueryResponse,
+    tags=["Contracts"]
+)
+async def graph_rag_query(
+    request: GraphRAGQueryRequest
+):
+    """
+    Query contracts using Graph RAG (hybrid semantic + graph retrieval).
+
+    This endpoint provides enhanced Q&A by combining:
+    - Semantic search over document text (ChromaDB)
+    - Graph traversal for related entities (FalkorDB)
+    - Re-ranked results using Reciprocal Rank Fusion (RRF)
+
+    The hybrid approach provides richer context by including:
+    - Relevant document chunks (semantic similarity)
+    - Company/party information (graph relationships)
+    - Related clauses and risk factors (graph context)
+
+    Args:
+        request: GraphRAGQueryRequest with query, optional contract_id, and n_results
+
+    Returns:
+        GraphRAGQueryResponse with answer, sources, and cost
+
+    Raises:
+        400: Invalid request (query too short, invalid n_results)
+        503: Graph RAG workflow not initialized
+        500: Query processing error
+    """
+    logger.info(
+        f"Graph RAG query: {request.query[:50]}... "
+        f"(contract_id={request.contract_id}, n_results={request.n_results})"
+    )
+
+    if not graph_rag_workflow:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "ServiceUnavailable",
+                "message": "Graph RAG workflow not initialized"
+            }
+        )
+
+    try:
+        # Run Graph RAG workflow
+        result = await graph_rag_workflow.run(
+            query=request.query,
+            contract_id=request.contract_id,
+            n_results=request.n_results,
+            include_sources=True
+        )
+
+        # Check for errors
+        if result.get("error"):
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "GraphRAGError",
+                    "message": result["error"]
+                }
+            )
+
+        # Build response
+        response = GraphRAGQueryResponse(
+            answer=result["answer"],
+            sources=result["sources"],
+            semantic_results=result["retrieval_response"].semantic_count,
+            graph_results=result["retrieval_response"].graph_count,
+            cost=result["cost"]
+        )
+
+        logger.info(
+            f"Graph RAG query completed: {response.semantic_results} semantic + "
+            f"{response.graph_results} graph results, cost ${response.cost:.6f}"
+        )
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing Graph RAG query: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "GraphRAGError",
+                "message": "Failed to process Graph RAG query",
                 "details": str(e)
             }
         )
