@@ -10,8 +10,8 @@ This script:
 5. Provides query functionality
 
 Usage:
-    # First, start FalkorDB:
-    docker run -p 6381:6379 -p 3001:3000 -it --rm falkordb/falkordb
+    # First, start FalkorDB (from project root):
+    docker-compose up -d
 
     # Set up environment variables in .env file or export them:
     export GOOGLE_API_KEY=your-gemini-api-key
@@ -59,9 +59,9 @@ def check_environment():
         sys.exit(1)
 
 
-# FalkorDB configuration (use port 6381 to avoid conflict with local Redis)
+# FalkorDB configuration (matches docker-compose.yml default)
 FALKORDB_HOST = os.getenv("FALKORDB_HOST", "localhost")
-FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6381"))
+FALKORDB_PORT = int(os.getenv("FALKORDB_PORT", "6379"))
 
 # Test documents directory
 TEST_DOCS_DIR = Path(__file__).parent.parent.parent / "docs" / "test"

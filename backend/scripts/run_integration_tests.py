@@ -124,8 +124,8 @@ SKIPPED_BOX = r"""
     ║                                                                  ║
     ║   ⏭️   TESTS SKIPPED - FalkorDB Not Available                     ║
     ║                                                                  ║
-    ║   Start FalkorDB with:                                           ║
-    ║   docker run -p 6381:6379 -p 3001:3000 -it --rm falkordb/falkordb║
+    ║   Start FalkorDB with docker-compose:                            ║
+    ║   docker-compose up -d                                           ║
     ║                                                                  ║
     ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -795,7 +795,7 @@ Examples:
     parser.add_argument("-v", "--verbose", action="store_true", help="Show verbose output")
     parser.add_argument("--demo", action="store_true", help="Run in demo mode (no actual tests)")
     parser.add_argument("--show-data", action="store_true", help="Show actual contract data from database")
-    parser.add_argument("--port", type=int, default=6381, help="FalkorDB port (default: 6381)")
+    parser.add_argument("--port", type=int, default=6379, help="FalkorDB port (default: 6379)")
     args = parser.parse_args()
 
     # Set port in environment
@@ -821,7 +821,7 @@ Examples:
         print(f"""
     💡 To start FalkorDB:
 
-       {colorize(f'docker run -p {args.port}:6379 -p 3001:3000 -it --rm falkordb/falkordb', Colors.CYAN)}
+       {colorize('docker-compose up -d', Colors.CYAN)}
 
     Then run this script again.
         """)

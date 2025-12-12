@@ -269,29 +269,29 @@ cd backend
 docker-compose up -d
 
 # 📄 Import sample contracts into the database
-FALKORDB_PORT=6379 python scripts/import_test_documents.py --import
+python scripts/import_test_documents.py --import
 
 # 📋 List imported contracts
-FALKORDB_PORT=6379 python scripts/import_test_documents.py --list
+python scripts/import_test_documents.py --list
 
 # 💬 Query a contract
-FALKORDB_PORT=6379 python scripts/import_test_documents.py --query "What are the payment terms?"
+python scripts/import_test_documents.py --query "What are the payment terms?"
 ```
 
 ### Step 2: Run the Visual Integration Tests
 
 ```bash
 # 🎨 Run the colorful integration test suite
-python scripts/run_integration_tests.py --port 6379
+python scripts/run_integration_tests.py
 
 # 🎬 Demo mode - preview what tests cover (no actual tests)
 python scripts/run_integration_tests.py --demo
 
 # 📊 Show live contract data with beautiful formatting
-python scripts/run_integration_tests.py --port 6379 --show-data
+python scripts/run_integration_tests.py --show-data
 
 # 🔍 Verbose output
-python scripts/run_integration_tests.py --port 6379 -v
+python scripts/run_integration_tests.py -v
 ```
 
 ### What You'll See

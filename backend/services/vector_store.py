@@ -14,6 +14,8 @@ from chromadb.config import Settings
 from chromadb.utils import embedding_functions
 import google.generativeai as genai
 
+from .legal_chunker import LegalDocumentChunker, chunk_legal_document
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,6 +66,13 @@ class ContractVectorStore:
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
             embedding_function=None  # We'll handle embeddings manually
+        )
+
+        # Initialize legal-aware chunker
+        self.chunker = LegalDocumentChunker(
+            max_chunk_size=1500,
+            min_chunk_size=200,
+            overlap_sentences=1
         )
 
         logger.info(
@@ -159,7 +168,8 @@ class ContractVectorStore:
         self,
         contract_id: str,
         document_text: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        use_legal_chunking: bool = True
     ) -> List[str]:
         """
         Chunk document, generate embeddings, and store in vector database.
@@ -168,13 +178,20 @@ class ContractVectorStore:
             contract_id: Unique identifier for the contract
             document_text: Full text of the document
             metadata: Additional metadata to store with each chunk
+            use_legal_chunking: Use section-aware chunking for legal docs (default: True)
 
         Returns:
             List of chunk IDs that were stored
         """
         try:
-            # Chunk the document
-            chunks = self._chunk_text(document_text)
+            # Chunk the document using legal-aware or basic chunking
+            if use_legal_chunking:
+                legal_chunks = self.chunker.chunk_document(document_text)
+                chunks = [chunk.text for chunk in legal_chunks]
+                chunk_structural_metadata = [chunk.to_dict() for chunk in legal_chunks]
+            else:
+                chunks = self._chunk_text(document_text)
+                chunk_structural_metadata = [{} for _ in chunks]
 
             if not chunks:
                 logger.warning(f"No chunks generated for contract {contract_id}")
@@ -183,16 +200,17 @@ class ContractVectorStore:
             # Generate embeddings
             embeddings = self._generate_embeddings(chunks)
 
-            # Prepare metadata for each chunk
+            # Prepare metadata for each chunk (merge base + structural metadata)
             base_metadata = metadata or {}
             chunk_metadata = [
                 {
                     **base_metadata,
+                    **structural_meta,
                     "contract_id": contract_id,
                     "chunk_index": i,
                     "total_chunks": len(chunks)
                 }
-                for i in range(len(chunks))
+                for i, structural_meta in enumerate(chunk_structural_metadata)
             ]
 
             # Generate unique IDs for each chunk
@@ -207,7 +225,7 @@ class ContractVectorStore:
             )
 
             logger.info(
-                f"Stored {len(chunks)} chunks for contract {contract_id} "
+                f"Stored {len(chunks)} section-aware chunks for contract {contract_id} "
                 f"in vector store"
             )
 
